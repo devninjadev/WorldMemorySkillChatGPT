@@ -4,7 +4,9 @@
 
 - Material change
 - Brief selection and importance
+- Editorial priority and verification queue
 - Cross-asset pulse and data gaps
+- Hourly delta briefing
 - Six-hour synthesis and Report v2
 - Korean output contracts
 - Autopilot allowlist and permission boundary
@@ -17,12 +19,13 @@ Set `material_change=true` only when verified evidence satisfies at least one ga
 2. An event changes an active state or the base, upside, or downside scenario.
 3. Multiple independent sources and a meaningful market reaction confirm the same development.
 4. A policy, geopolitical, or corporate event requires a verification or response decision within the next 1–3 hours.
+5. A newly verified `high` event, or a newly verified `medium` event with both Tier-1 geography and Tier-1 domain priority, has a concrete decision-relevant consequence and is not a routine update, unsupported opinion, or rumor.
 
-The four gates are independent alternatives. Urgency is not the default or dominant gate. A verified event may be material without requiring action in the next 1–3 hours when another gate is satisfied. Treat the fourth gate as an escalation and notification horizon, not as the definition of durable World Memory importance.
+The five gates are independent alternatives. Urgency is not the default or dominant gate. A verified event may be material without requiring action in the next 1–3 hours when another gate is satisfied. Treat the fourth gate as an escalation and notification horizon, not as the definition of durable World Memory importance. Gate five makes the hourly channel responsive to important new information before it accumulates into a broad market regime.
 
 Do not invent numeric price, yield, spread, volatility, or news-count thresholds. Judge materiality from the verified event, transmission path, reaction, and decision horizon. A FEED headline alone does not satisfy a gate.
 
-Material change is the hourly visibility decision, not the durable Memory admission decision. First select verified durable briefs, then connect them to prior current Memory, then decide whether an accumulated state changes, and only then decide notification urgency. A scheduled non-due Run may create verified brief Memory revisions while keeping `Material Change=false`, `Notification Plan=silent`, and no Report when none of the four gates is satisfied.
+Material change is the hourly visibility decision, not the durable Memory admission decision. Treat the visible hourly product as an hourly delta briefing: judge newly collected developments first, then connect them to prior current Memory, and do not require a state mutation before an important new event can be shown. A scheduled non-due Run may create verified brief Memory revisions while keeping `Material Change=false`, `Notification Plan=silent`, and no Report when none of the five gates is satisfied.
 
 For a scheduled Run with no gate and no due six-hour report, use notification plan `silent`. A successful due or forced six-hour report is always user-visible even when no hourly material change exists.
 
@@ -36,7 +39,28 @@ Record each verified durable event as a brief before considering state or story 
 
 Shape each brief payload with `dedupe_key`, verified `sources`, the required event schema, and at least one semantic anchor from `subjects`, `industries`, or `event_kind`. Do not require all three anchors. Do not create a derived state merely because a brief exists.
 
-Treat an earnings event as at least `medium`. Treat a strong beat/miss, surprise/shock, or guidance raise/cut as `high`. Classify an earnings brief under `stock_bond`, not `emerging`.
+Treat an earnings event as at least `medium` for durable brief admission. That floor does not automatically earn hourly or six-hour placement: a narrow single-company result without sector read-through, meaningful reaction, active-Memory relevance, or a decision consequence may remain Memory-only. Treat a strong beat/miss, surprise/shock, or guidance raise/cut as `high`. Classify an earnings brief under `stock_bond`, not `emerging`.
+
+Treat an official financing, capital return, merger, divestiture, major investment, regulatory decision, management change, or other capital-structure event as at least `medium` when it has a concrete company consequence. Raise it to `high` when its size, dilution, balance-sheet effect, strategic persistence, industry read-through, or observed market reaction is substantial. A major analyst action may be `medium` when it concerns a systemically important or widely held company and carries specific estimate, target-price, product-cycle, supply-chain, or capital-allocation evidence with an observable market reaction. Do not dismiss it merely because the issuing source is an analyst; distinguish a sourced research action from unsupported commentary.
+
+## Editorial priority and verification queue
+
+Evidence quality remains a prerequisite. After evidence quality and intrinsic `high|medium|low` importance are assessed, use the following editorial priority to order verification, Memory admission, hourly visibility, and Report placement. A lower geographic tier does not erase an intrinsically major global event, and a trivial Tier-1 item does not outrank a materially larger Tier-2 event.
+
+Geography priority:
+
+1. Tier 1: direct US or KR events, or events elsewhere with a clear and substantial US or KR transmission path.
+2. Tier 2: direct China, Japan, Europe, or the Middle East events without a Tier-1 transmission path.
+3. Tier 3: every other geography without a higher-tier transmission path.
+
+Domain priority:
+
+1. Tier 1: economics, finance, industry, technology, diplomacy, or politics.
+2. Tier 2: culture, lifestyle, or entertainment.
+
+Within otherwise comparable candidates, order a genuinely new event ahead of a repeated update, a concrete company/policy action ahead of commentary, and a development tied to active Memory ahead of an isolated item. Record the geography tier, domain tier, and concise rationale in analysis-domain payload fields when useful; these fields never replace `Importance` or verified sources.
+
+Build a deduplicated verification queue before spending external verification effort. Attempt candidates in editorial order. When qualifying unresolved candidates exist, reserve one verification position for the highest-ranked company or industry candidate and one for the highest-ranked US/KR-impact candidate; one candidate may satisfy both reservations. Do not spend those positions rechecking unchanged cross-asset data or lower-tier routine news. A verification cap limits attempts, not fair consideration: record an unattempted high-ranked candidate as pending rather than silently treating it as unimportant.
 
 ## Cross-asset pulse and data gaps
 
@@ -55,9 +79,19 @@ Use `DTWEXBGS` only as the Fed nominal broad U.S. dollar index, never as ICE DXY
 
 Keep each radar note to one or two plain-language Korean interpretation sentences. Put formulas, scope, and score direction in `methodology`, not the note.
 
+The complete cross-asset snapshot belongs in the six-hour synthesis. In an hourly delta briefing, include cross-asset evidence only when it changed materially since the previous visible Report, directly reacts to a new development, or confirms or invalidates that development. An unchanged cross-asset snapshot is neither a headline nor a required hourly section; keep `signalRadar` empty when it adds no decision-relevant delta and do not render a boilerplate “no change” paragraph.
+
+## Hourly delta briefing
+
+The hourly delta briefing answers three questions: what is new, why it matters, and where it transmits—especially to the US or KR. Rank newly verified developments using intrinsic importance plus the editorial geography and domain priorities. Show at most five distinct developments, merge duplicate headlines, and lead with the consequence rather than the source count.
+
+Do not repeat a prior development unless the new item changes its facts, importance, transmission, confirmation, or invalidation. Do not delay a verified company event until the six-hour report merely because a policy story has broader reach. If no event passes a material gate, commit the permitted evidence and remain silent under the existing output policy.
+
 ## Six-hour synthesis and Report v2
 
 Use committed Feed Batch items with canonical `fetchedAt` in `(previous committed integration cutoff, current collection cutoff]`, prior current committed Memory revisions, prior committed Reports, current verified sources, and available market data. Items after the cutoff remain for the next integration. Exclude every child whose parent Run is not committed.
+
+The six-hour integration is the cumulative synthesis. Reconsider every deduplicated `high` and `medium` development in the integration window, including events already shown in an hourly briefing, and explain how the accumulated evidence changes the prior view. Include qualified company and industry developments as distinct evidence rather than reducing the report to macro, policy, or geopolitics. Do not drop a verified Tier-1 company or industry development merely because a macro or policy item has broader reach; when space is constrained, merge duplicates and routine follow-ups before removing a distinct Tier-1 event.
 
 Explain what changed since the previous Report, the causal transmission path, observed or expected asset response, counterevidence, and the next verification point. Express portfolio actions as conditional observation, confirmation, sizing, or hedge considerations, not unsupported buy/sell commands.
 
@@ -136,11 +170,12 @@ Render a material hourly briefing in Korean with these sections, in order:
 
 1. `한 줄 판단`
 2. `새로운 중요 발전` — at most five
-3. `교차자산 펄스`
-4. `영향 자산·티커`
-5. `확인·무효화 조건`
-6. `다음 확인 지점`
-7. `출처`
+3. `왜 중요한가·미국/한국 영향`
+4. optional `교차자산 반응` — only for a material change, direct reaction, confirmation, or invalidation
+5. `영향 자산·티커`
+6. `확인·무효화 조건`
+7. `다음 확인 지점`
+8. `출처`
 
 Render every successful six-hour report in Korean with these sections, in order:
 
@@ -149,11 +184,12 @@ Render every successful six-hour report in Korean with these sections, in order:
 3. `직전 대비 변화`
 4. `신호 레이더`
 5. `핵심 발전`
-6. `기준·낙관·비관 시나리오`
-7. `월드 메모리 변경 제안`
-8. `포트폴리오·관찰 제안`
-9. `다음 확인 지점`
-10. `출처와 데이터 공백`
+6. `기업·산업 발전` — when at least one qualified company or industry event exists
+7. `기준·낙관·비관 시나리오`
+8. `월드 메모리 변경 제안`
+9. `포트폴리오·관찰 제안`
+10. `다음 확인 지점`
+11. `출처와 데이터 공백`
 
 Do not expose internal IDs, commands, or connector mechanics in the user rendering. Write `Notification Plan` before commit, then return the prepared rendering only after committed-Run confirmation and cache reconciliation attempt. Do not claim that delivery was observed.
 
