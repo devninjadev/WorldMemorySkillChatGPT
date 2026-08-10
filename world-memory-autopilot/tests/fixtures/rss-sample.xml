@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample Market Feed</title>
+    <link>https://example.test/feed</link>
+    <item>
+      <title>  Markets   open   higher  </title>
+      <guid>guid-7</guid>
+      <link>https://example.test/markets-open-higher</link>
+      <pubDate>Sun, 09 Aug 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Inflation cools</title>
+      <guid>guid-8</guid>
+      <link>https://example.test/inflation-cools</link>
+      <pubDate>Sun, 09 Aug 2026 11:30:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
