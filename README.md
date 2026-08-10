@@ -5,7 +5,7 @@ World Memory Autopilot is a ChatGPT skill for hourly feed monitoring and six-hou
 ## Required dependency
 
 - `Notion ChatGPT plugin` (the Notion connector for ChatGPT) is required. Install and connect it to ChatGPT, then grant it access to the Notion workspace that will hold the World Memory Hub and databases.
-- Python 3.10 or later is required for the packaged deterministic helpers. They use only the Python standard library.
+- Python 3.10 or later is required for the packaged deterministic helpers. The market adapter can install its pinned `yfinance`, `pandas`, and `numpy` dependencies into an isolated runtime directory when they are not already available.
 - Outbound HTTPS access is required for configured RSS feeds and public market-data sources.
 - ChatGPT scheduled automations are required only for unattended hourly monitoring; manual runs do not require a schedule.
 
@@ -13,7 +13,7 @@ World Memory setup and operational runs must stop if the Notion ChatGPT plugin i
 
 ## Install
 
-Download the `world-memory-autopilot-v0.9.1.zip` asset from the GitHub release and install or import it as a ChatGPT skill. The archive contains one top-level `world-memory-autopilot` folder.
+Download the `world-memory-autopilot-v0.9.2.zip` asset from the GitHub release and install or import it as a ChatGPT skill. The archive contains one top-level `world-memory-autopilot` folder.
 
 ## Repository layout
 
@@ -24,4 +24,4 @@ Download the `world-memory-autopilot-v0.9.1.zip` asset from the GitHub release a
 
 ## Version
 
-This repository snapshot is release `v0.9.1`.
+This repository snapshot is release `v0.9.2`.
