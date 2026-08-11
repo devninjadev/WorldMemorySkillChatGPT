@@ -19,6 +19,7 @@ Trigger = Literal["scheduled", "manual", "force-world-memory"]
 _STATUSES = frozenset({"initializing", "active", "paused", "error"})
 _RUN_STATUSES = frozenset({"preparing", "committed", "failed", "superseded"})
 _NOTIFICATION_PLANS = frozenset({"silent", "hourly-briefing", "six-hour", "error"})
+_INTERNAL_INTEGRATION_GATE = timedelta(hours=5, minutes=45)
 _FEED_IDS = tuple(source[0] for source in CONFIGURED_SOURCES)
 _OUTCOME_KEYS = frozenset({"status", "itemCount", "cursor", "error"})
 _UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -449,7 +450,7 @@ def world_memory_due(
     now: datetime,
     trigger: str,
 ) -> bool:
-    """Return the timing-only six-hour gate from authoritative integration Runs."""
+    """Return the timing-only nominal six-hour gate from authoritative Runs."""
     normalized = normalize_trigger(trigger)
     current = _aware_utc(now, "now")
     interval = installation.get("World Memory Interval Hours") if isinstance(installation, dict) else None
@@ -463,7 +464,7 @@ def world_memory_due(
         raise ValueError("authoritative integration cutoff cannot be in the future")
     if normalized == "force-world-memory":
         return True
-    return current >= cutoff_at + timedelta(hours=6)
+    return current >= cutoff_at + _INTERNAL_INTEGRATION_GATE
 
 
 def _exact_equal(left: object, right: object) -> bool:

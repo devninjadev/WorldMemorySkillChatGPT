@@ -319,7 +319,7 @@ class IntegrationGateTests(unittest.TestCase):
             "",
         )
 
-    def test_due_uses_six_hours_genesis_boundary_and_force_only_bypasses_clock(self):
+    def test_due_uses_five_hours_forty_five_minutes_for_nominal_six_hour_gate(self):
         row = committed_run(
             "run-integration", "2026-08-10T06:00:00Z",
             integration=True,
@@ -327,7 +327,8 @@ class IntegrationGateTests(unittest.TestCase):
         )
         current = installation()
         self.assertTrue(world_memory_due(current, [], utc("2026-08-10T00:00:00Z"), "manual"))
-        self.assertFalse(world_memory_due(current, [row], utc("2026-08-10T11:59:59Z"), "scheduled"))
+        self.assertFalse(world_memory_due(current, [row], utc("2026-08-10T11:44:59Z"), "scheduled"))
+        self.assertTrue(world_memory_due(current, [row], utc("2026-08-10T11:45:00Z"), "scheduled"))
         self.assertTrue(world_memory_due(current, [row], utc("2026-08-10T12:00:00Z"), "manual"))
         self.assertTrue(world_memory_due(current, [row], utc("2026-08-10T06:01:00Z"), "force-world-memory"))
 
