@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
@@ -69,7 +69,415 @@ def _yahoo_chart(closes: list[float]) -> str:
     )
 
 
+def _nasdaq_history(symbol: str, closes: list[float]) -> str:
+    days = ("01/07/2026", "01/08/2026", "01/09/2026", "01/12/2026", "01/13/2026", "01/14/2026")
+    return json.dumps(
+        {
+            "data": {
+                "symbol": symbol,
+                "totalRecords": len(days),
+                "tradesTable": {
+                    "headers": {"date": "Date", "close": "Close/Last"},
+                    "rows": [
+                        {
+                            "date": day,
+                            "close": f"${close:.2f}",
+                            "volume": "1,000,000",
+                            "open": f"${close - 0.1:.2f}",
+                            "high": f"${close + 0.1:.2f}",
+                            "low": f"${close - 0.2:.2f}",
+                        }
+                        for day, close in zip(days, closes)
+                    ],
+                },
+            },
+            "message": None,
+            "status": {"rCode": 200},
+        }
+    )
+
+
+def _long_nasdaq_history(symbol: str, closes: list[float]) -> str:
+    days = []
+    current = datetime(2025, 12, 15, tzinfo=timezone.utc)
+    while len(days) < len(closes):
+        if current.weekday() < 5:
+            days.append(current.strftime("%m/%d/%Y"))
+        current += timedelta(days=1)
+    return json.dumps(
+        {
+            "data": {
+                "symbol": symbol,
+                "totalRecords": len(days),
+                "tradesTable": {
+                    "headers": {"date": "Date", "close": "Close/Last"},
+                    "rows": [
+                        {"date": day, "close": f"${close:.4f}"}
+                        for day, close in zip(days, closes)
+                    ],
+                },
+            },
+            "message": None,
+            "status": {"rCode": 200},
+        }
+    )
+
+
+def _ishares_history(values: list[float]) -> bytes:
+    days = ("Jan 07, 2026", "Jan 08, 2026", "Jan 09, 2026", "Jan 12, 2026", "Jan 13, 2026", "Jan 14, 2026")
+    rows = "".join(
+        "<ss:Row>"
+        f'<ss:Cell><ss:Data ss:Type="String">{day}</ss:Data></ss:Cell>'
+        f'<ss:Cell><ss:Data ss:Type="Number">{value}</ss:Data></ss:Cell>'
+        '<ss:Cell><ss:Data ss:Type="Number">0</ss:Data></ss:Cell>'
+        '<ss:Cell><ss:Data ss:Type="Number">1000000</ss:Data></ss:Cell>'
+        "</ss:Row>"
+        for day, value in zip(days, values)
+    )
+    return (
+        '<?xml version="1.0"?>'
+        '<ss:Workbook xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+        '<ss:Worksheet ss:Name="Historical"><ss:Table>'
+        '<ss:Row><ss:Cell><ss:Data ss:Type="String">As Of</ss:Data></ss:Cell>'
+        '<ss:Cell><ss:Data ss:Type="String">NAV per Share</ss:Data></ss:Cell>'
+        '<ss:Cell><ss:Data ss:Type="String">Ex-Dividends</ss:Data></ss:Cell>'
+        '<ss:Cell><ss:Data ss:Type="String">Shares Outstanding</ss:Data></ss:Cell></ss:Row>'
+        f"{rows}</ss:Table></ss:Worksheet></ss:Workbook>"
+    ).encode("utf-8")
+
+
 class MarketCollectionTests(unittest.TestCase):
+    def test_sp_global_workbook_parser_extracts_price_return_history(self) -> None:
+        import pandas as pd
+
+        rows = [["metadata", None]]
+        rows.append(["Date", "Index Level"])
+        rows.extend(
+            [[f"2025-12-{day:02d}", 1000.0 + day] for day in range(1, 22)]
+        )
+        frame = pd.DataFrame(rows)
+        with patch(
+            "world_memory.bootstrap.ensure_runtime_dependencies", return_value={}
+        ), patch("pandas.read_excel", return_value=frame):
+            history = market._parse_sp_global_history(
+                b"legacy-xls",
+                datetime(2026, 1, 14, tzinfo=timezone.utc),
+                "RSP",
+            )
+
+        self.assertEqual(len(history), 21)
+        self.assertEqual(history[datetime(2025, 12, 21).date()], 1021.0)
+
+    def test_yfinance_is_third_breadth_tier_and_uses_complete_pair(self) -> None:
+        days = []
+        current = datetime(2025, 12, 1, tzinfo=timezone.utc)
+        while len(days) < 21:
+            if current.weekday() < 5:
+                days.append(current.date())
+            current += timedelta(days=1)
+        histories = {
+            "RSP": {day: 100.0 + index for index, day in enumerate(days)},
+            "SPY": {day: 200.0 + index for index, day in enumerate(days)},
+        }
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=lambda *_: (_ for _ in ()).throw(OSError("unavailable")),
+            fetch_bytes=lambda *_: (_ for _ in ()).throw(OSError("unavailable")),
+            breadth_finance_history=lambda _: histories,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        breadth = result["equityBreadth"]
+        self.assertEqual(breadth["status"], "ok")
+        self.assertEqual(breadth["provider"], "Yahoo Finance via yfinance")
+        self.assertEqual(
+            [attempt["sourceId"] for attempt in breadth["attempts"]],
+            ["NASDAQ_RSP_SPY", "SP_GLOBAL_RSP_SPY", "YAHOO_RSP_SPY"],
+        )
+
+    def test_credit_and_breadth_cache_sections_preserve_each_other(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market-cache.json"
+            credit = {
+                symbol: {
+                    datetime.fromisoformat(day).date(): value
+                    for day, value in values.items()
+                }
+                for symbol, values in _credit_histories().items()
+            }
+            days = [datetime(2025, 12, day).date() for day in range(1, 22)]
+            breadth = {
+                "RSP": {day: 100.0 + index for index, day in enumerate(days)},
+                "SPY": {day: 200.0 + index for index, day in enumerate(days)},
+            }
+            market._write_credit_cache(
+                path,
+                credit,
+                "2026-01-14T12:00:00Z",
+                provider="Nasdaq",
+                value_basis="Close",
+                source_urls={"HYG": "https://example/HYG", "LQD": "https://example/LQD"},
+            )
+            market._write_breadth_cache(
+                path,
+                breadth,
+                "2026-01-14T12:00:01Z",
+                provider="Nasdaq",
+                value_basis="Close",
+                source_urls={"RSP": "https://example/RSP", "SPY": "https://example/SPY"},
+            )
+
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(set(cached), {"schemaVersion", "creditRatio", "equityBreadth"})
+            self.assertEqual(cached["creditRatio"]["provider"], "Nasdaq")
+            self.assertEqual(cached["equityBreadth"]["provider"], "Nasdaq")
+
+    def test_nasdaq_rsp_spy_pair_computes_breadth_changes(self) -> None:
+        close_time = int(datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+        def fetch_text(url: str, _: float) -> str:
+            parsed = urlparse(url)
+            symbol = parse_qs(parsed.query).get("symbol", [None])[0]
+            if parsed.netloc == "api.nasdaq.com":
+                path_symbol = parsed.path.split("/")[3]
+                if path_symbol in {"HYG", "LQD"}:
+                    return _nasdaq_history(
+                        path_symbol,
+                        [80, 81, 82, 83, 84, 85]
+                        if path_symbol == "HYG"
+                        else [100, 101, 102, 103, 104, 105],
+                    )
+                values = [100 + index for index in range(21)]
+                if path_symbol == "SPY":
+                    values = [200 + index for index in range(21)]
+                return _long_nasdaq_history(path_symbol, values)
+            if "binance" in parsed.netloc:
+                return json.dumps(
+                    {
+                        "symbol": symbol,
+                        "lastPrice": "100.0",
+                        "priceChangePercent": "1.5",
+                        "quoteVolume": "1000000.0",
+                        "count": 100,
+                        "closeTime": close_time,
+                    }
+                )
+            raise OSError("unexpected source")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        breadth = result["equityBreadth"]
+        self.assertEqual(breadth["status"], "ok")
+        self.assertEqual(breadth["provider"], "Nasdaq")
+        self.assertEqual(breadth["valueBasis"], "Close")
+        self.assertEqual(breadth["observationDate"], "2026-01-12")
+        self.assertEqual(set(breadth["changesPct"]), {"1-session", "5-session", "20-session"})
+        self.assertEqual(breadth["direction5Sessions"], "expanding")
+
+    def test_incomplete_nasdaq_breadth_pair_falls_back_to_complete_sp_global_pair(self) -> None:
+        def fetch_text(url: str, _: float) -> str:
+            parsed = urlparse(url)
+            if parsed.netloc == "api.nasdaq.com":
+                symbol = parsed.path.split("/")[3]
+                if symbol == "RSP":
+                    return _long_nasdaq_history(symbol, [100 + index for index in range(21)])
+                raise OSError(f"{symbol} unavailable")
+            raise OSError("unavailable")
+
+        sp_values = {
+            "RSP": {f"2025-12-{day:02d}": 100.0 + day for day in range(1, 22)},
+            "SPY": {f"2025-12-{day:02d}": 200.0 + day for day in range(1, 22)},
+        }
+
+        def fetch_bytes(url: str, _: float) -> bytes:
+            if "fredgraph.csv" in url:
+                return _fred_batch_zip()
+            if "indexId=370" in url:
+                return b"rsp-sp-global"
+            if "indexId=340" in url:
+                return b"spy-sp-global"
+            raise OSError("unexpected bytes source")
+
+        def parse_sp(payload: bytes, cutoff: datetime, symbol: str):
+            expected = b"rsp-sp-global" if symbol == "RSP" else b"spy-sp-global"
+            self.assertEqual(payload, expected)
+            return {
+                datetime.fromisoformat(day).date(): value
+                for day, value in sp_values[symbol].items()
+                if datetime.fromisoformat(day).date() <= cutoff.date()
+            }
+
+        with patch.object(market, "_parse_sp_global_history", side_effect=parse_sp):
+            result = market.collect_market_data(
+                "2026-01-14T12:00:00Z",
+                fetch_text=fetch_text,
+                fetch_bytes=fetch_bytes,
+                clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+            )
+
+        breadth = result["equityBreadth"]
+        self.assertEqual(breadth["status"], "ok")
+        self.assertEqual(breadth["provider"], "S&P Dow Jones Indices")
+        self.assertEqual(breadth["valueBasis"], "Price Return Index")
+        self.assertEqual(
+            breadth["formula"],
+            "S&P 500 Equal Weight Price Return Index / S&P 500 Price Return Index",
+        )
+    def test_nasdaq_close_is_used_before_ishares_yahoo_and_cache(self) -> None:
+        requested: list[str] = []
+
+        def fetch_text(url: str, _: float) -> str:
+            requested.append(url)
+            parsed = urlparse(url)
+            if parsed.netloc == "api.nasdaq.com":
+                symbol = parsed.path.split("/")[3]
+                return _nasdaq_history(
+                    symbol,
+                    [80.0, 81.0, 82.0, 83.0, 84.0, 85.0]
+                    if symbol == "HYG"
+                    else [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+                )
+            raise OSError("fixture intentionally withholds non-Nasdaq text sources")
+
+        def forbidden_finance_history(_: float) -> dict:
+            raise AssertionError("Yahoo must not run after a complete Nasdaq pair")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            fetch_bytes=lambda *_: (_ for _ in ()).throw(OSError("FRED unavailable")),
+            finance_history=forbidden_finance_history,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        ratio = result["creditRatio"]
+        self.assertEqual(ratio["status"], "ok")
+        self.assertEqual(ratio["provider"], "Nasdaq")
+        self.assertEqual(ratio["valueBasis"], "Close")
+        self.assertEqual(ratio["componentValues"], {"HYG": 85.0, "LQD": 105.0})
+        credit_nasdaq = [
+            url
+            for url in requested
+            if "api.nasdaq.com" in url and any(f"/{symbol}/" in url for symbol in ("HYG", "LQD"))
+        ]
+        self.assertEqual(len(credit_nasdaq), 2)
+        self.assertFalse(
+            any(
+                "query1.finance.yahoo.com" in url
+                and any(f"/{symbol}?" in url for symbol in ("HYG", "LQD"))
+                for url in requested
+            )
+        )
+
+    def test_ishares_nav_is_second_and_never_labeled_as_close(self) -> None:
+        requested: list[str] = []
+
+        def fetch_text(url: str, _: float) -> str:
+            requested.append(url)
+            raise OSError("Nasdaq and other text sources unavailable")
+
+        def fetch_bytes(url: str, _: float) -> bytes:
+            requested.append(url)
+            if "portfolioId=239565" in url:
+                return _ishares_history([79.0, 79.2, 79.4, 79.6, 79.8, 80.0])
+            if "portfolioId=239566" in url:
+                return _ishares_history([105.0, 105.2, 105.4, 105.6, 105.8, 106.0])
+            raise OSError("FRED unavailable")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            fetch_bytes=fetch_bytes,
+            finance_history=lambda _: (_ for _ in ()).throw(
+                AssertionError("Yahoo must not run after a complete iShares pair")
+            ),
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        ratio = result["creditRatio"]
+        self.assertEqual(ratio["status"], "ok")
+        self.assertEqual(ratio["provider"], "iShares")
+        self.assertEqual(ratio["valueBasis"], "NAV")
+        self.assertEqual(ratio["formula"], "HYG NAV per Share / LQD NAV per Share")
+        self.assertNotIn("componentCloses", ratio)
+        self.assertFalse(
+            any(
+                "query1.finance.yahoo.com" in url
+                and any(f"/{symbol}?" in url for symbol in ("HYG", "LQD"))
+                for url in requested
+            )
+        )
+
+    def test_incomplete_nasdaq_pair_falls_back_to_complete_ishares_pair(self) -> None:
+        def fetch_text(url: str, _: float) -> str:
+            parsed = urlparse(url)
+            if parsed.netloc == "api.nasdaq.com":
+                symbol = parsed.path.split("/")[3]
+                return _nasdaq_history(
+                    symbol,
+                    [80.0, 81.0, 82.0, 83.0, 84.0]
+                    if symbol == "HYG"
+                    else [100.0, 101.0, 102.0, 103.0, 104.0],
+                )
+            raise OSError("non-Nasdaq text source unavailable")
+
+        def fetch_bytes(url: str, _: float) -> bytes:
+            if "portfolioId=239565" in url:
+                return _ishares_history([79.0, 79.2, 79.4, 79.6, 79.8, 80.0])
+            if "portfolioId=239566" in url:
+                return _ishares_history([105.0, 105.2, 105.4, 105.6, 105.8, 106.0])
+            raise OSError("FRED unavailable")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            fetch_bytes=fetch_bytes,
+            finance_history=lambda _: (_ for _ in ()).throw(
+                AssertionError("Yahoo must not run after complete iShares fallback")
+            ),
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["creditRatio"]["status"], "ok")
+        self.assertEqual(result["creditRatio"]["provider"], "iShares")
+        self.assertEqual(result["creditRatio"]["valueBasis"], "NAV")
+
+    def test_yahoo_runs_only_after_nasdaq_and_ishares_fail(self) -> None:
+        sequence: list[str] = []
+
+        def fetch_text(url: str, _: float) -> str:
+            parsed = urlparse(url)
+            if parsed.netloc == "api.nasdaq.com":
+                symbol = parsed.path.split("/")[3]
+                if symbol in {"HYG", "LQD"}:
+                    sequence.append("nasdaq")
+            raise OSError("text source unavailable")
+
+        def fetch_bytes(url: str, _: float) -> bytes:
+            if "blackrock.com" in url:
+                sequence.append("ishares")
+            raise OSError("bytes source unavailable")
+
+        def finance_history(_: float) -> dict:
+            sequence.append("yahoo")
+            return _credit_histories()
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            fetch_bytes=fetch_bytes,
+            finance_history=finance_history,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["creditRatio"]["provider"], "Yahoo Finance via yfinance")
+        self.assertEqual(sequence, ["nasdaq", "nasdaq", "ishares", "ishares", "yahoo"])
+
     def test_yfinance_history_surfaces_rate_limit_instead_of_returning_empty_data(self) -> None:
         class YFRateLimitError(RuntimeError):
             pass
@@ -111,15 +519,21 @@ class MarketCollectionTests(unittest.TestCase):
         self.assertEqual(result["creditRatio"]["status"], "ok")
         self.assertEqual(result["creditRatio"]["cacheStatus"], "refreshed")
 
-    def test_fresh_credit_cache_skips_hourly_yahoo_request(self) -> None:
+    def test_fresh_credit_cache_is_used_only_after_all_live_sources_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache_path = Path(directory) / "market-cache.json"
             cache_path.write_text(
                 json.dumps(
                     {
-                        "schemaVersion": 1,
+                        "schemaVersion": 2,
                         "creditRatio": {
                             "savedAt": "2026-01-14T10:00:00Z",
+                            "provider": "Nasdaq",
+                            "valueBasis": "Close",
+                            "sourceUrls": {
+                                "HYG": "https://api.nasdaq.com/api/quote/HYG/historical",
+                                "LQD": "https://api.nasdaq.com/api/quote/LQD/historical",
+                            },
                             "histories": _credit_histories(),
                         },
                     }
@@ -127,23 +541,26 @@ class MarketCollectionTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def forbidden_finance_history(_: float) -> dict:
-                raise AssertionError("fresh cache must suppress Yahoo acquisition")
+            yahoo_attempted = False
+
+            def unavailable_finance_history(_: float) -> dict:
+                nonlocal yahoo_attempted
+                yahoo_attempted = True
+                raise OSError("Yahoo unavailable")
 
             result = market.collect_market_data(
                 "2026-01-14T12:00:00Z",
                 fetch_text=lambda *_: (_ for _ in ()).throw(OSError("unavailable")),
                 fetch_bytes=lambda *_: (_ for _ in ()).throw(OSError("unavailable")),
-                finance_history=forbidden_finance_history,
+                finance_history=unavailable_finance_history,
                 cache_path=cache_path,
                 clock=lambda: datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc),
             )
 
             self.assertEqual(result["creditRatio"]["status"], "ok")
-            self.assertEqual(result["creditRatio"]["cacheStatus"], "fresh-hit")
-            self.assertFalse(
-                any(gap["sourceId"] in {"HYG", "LQD"} for gap in result["dataQuality"]["gaps"])
-            )
+            self.assertEqual(result["creditRatio"]["cacheStatus"], "fresh-fallback")
+            self.assertTrue(yahoo_attempted)
+            self.assertEqual(result["creditRatio"]["provider"], "Nasdaq")
 
     def test_rate_limited_credit_provider_uses_valid_cache(self) -> None:
         class YFRateLimitError(RuntimeError):
@@ -154,9 +571,15 @@ class MarketCollectionTests(unittest.TestCase):
             cache_path.write_text(
                 json.dumps(
                     {
-                        "schemaVersion": 1,
+                        "schemaVersion": 2,
                         "creditRatio": {
                             "savedAt": "2026-01-14T05:00:00Z",
+                            "provider": "Nasdaq",
+                            "valueBasis": "Close",
+                            "sourceUrls": {
+                                "HYG": "https://api.nasdaq.com/api/quote/HYG/historical",
+                                "LQD": "https://api.nasdaq.com/api/quote/LQD/historical",
+                            },
                             "histories": _credit_histories(),
                         },
                     }
@@ -203,6 +626,9 @@ class MarketCollectionTests(unittest.TestCase):
             self.assertEqual(result["creditRatio"]["cacheStatus"], "refreshed")
             saved = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["creditRatio"]["savedAt"], "2026-01-14T12:00:01Z")
+            self.assertEqual(saved["schemaVersion"], 2)
+            self.assertEqual(saved["creditRatio"]["valueBasis"], "Close")
+            self.assertEqual(saved["creditRatio"]["provider"], "Yahoo Finance via yfinance")
 
     def test_fred_batch_and_live_tickers_share_one_parallel_pass(self) -> None:
         fred_started = Event()
@@ -304,8 +730,12 @@ class MarketCollectionTests(unittest.TestCase):
             clock=lambda: fixed_now,
         )
 
-        self.assertEqual(len(fred_urls), 1)
-        self.assertIn("NFCIRISK%2CWALCL%2CWDTGAL%2CRRPONTSYD%2CDTWEXBGS", fred_urls[0])
+        fred_batch_urls = [url for url in fred_urls if "fredgraph.csv" in url]
+        self.assertEqual(len(fred_batch_urls), 1)
+        self.assertIn(
+            "NFCIRISK%2CWALCL%2CWDTGAL%2CRRPONTSYD%2CDTWEXBGS",
+            fred_batch_urls[0],
+        )
         self.assertTrue(all(item["status"] == "ok" for item in result["fred"].values()))
         self.assertEqual(result["netLiquidity"]["status"], "ok")
 
@@ -429,7 +859,19 @@ class MarketCollectionTests(unittest.TestCase):
         self.assertEqual(result["creditRatio"]["status"], "failed")
         self.assertEqual(
             [gap["sourceId"] for gap in result["dataQuality"]["gaps"]],
-            ["HYG", "LQD", "CLUSDT", "XAUUSDT", "BTCUSDT"],
+            [
+                "NASDAQ_HYG_LQD",
+                "ISHARES_HYG_LQD",
+                "YAHOO_HYG_LQD",
+                "NASDAQ_RSP_SPY",
+                "SP_GLOBAL_RSP_SPY",
+                "YAHOO_RSP_SPY",
+                "CLUSDT",
+                "XAUUSDT",
+                "BTCUSDT",
+                "QQQUSDT",
+                "SPYUSDT",
+            ],
         )
 
     def test_missing_liquidity_component_does_not_erase_nfci(self):

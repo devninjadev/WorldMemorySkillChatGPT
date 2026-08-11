@@ -6,7 +6,7 @@
 - Brief selection and importance
 - Editorial priority and verification queue
 - Cross-asset pulse and data gaps
-- Hourly delta briefing
+- Hourly cumulative full report
 - Six-hour synthesis and Report v2
 - Korean output contracts
 - Autopilot allowlist and permission boundary
@@ -25,9 +25,9 @@ The five gates are independent alternatives. Urgency is not the default or domin
 
 Do not invent numeric price, yield, spread, volatility, or news-count thresholds. Judge materiality from the verified event, transmission path, reaction, and decision horizon. A FEED headline alone does not satisfy a gate.
 
-Material change is the hourly visibility decision, not the durable Memory admission decision. Treat the visible hourly product as an hourly delta briefing: judge newly collected developments first, then connect them to prior current Memory, and do not require a state mutation before an important new event can be shown. A scheduled non-due Run may create verified brief Memory revisions while keeping `Material Change=false`, `Notification Plan=silent`, and no Report when none of the five gates is satisfied.
+Material change is an importance and urgency signal inside the hourly product, not the scheduled visibility gate and not the durable Memory admission decision. Judge newly collected developments first, then connect them to prior current Memory, and do not require a state mutation before an important new event can be shown. A scheduled non-due Run never creates Memory revisions or completes suggestions; it prepares one cumulative full-size `hourly-briefing` Report with `Notification Plan=hourly-briefing` even when `Material Change=false`.
 
-For a scheduled Run with no gate and no due six-hour report, use notification plan `silent`. A successful due or forced six-hour report is always user-visible even when no hourly material change exists.
+Every successful active scheduled Run is user-visible. A due or forced Run creates the six-hour Report and may perform evidence-supported Memory actions; a non-due Run creates the cumulative hourly Report without advancing the integration cutoff. Keep `silent` only for policy-defined no-ops such as paused or disabled scheduled Installations, not for a successful active collection.
 
 ## Brief selection and importance
 
@@ -66,7 +66,7 @@ Build a deduplicated verification queue before spending external verification ef
 
 Cover available evidence for equities, market breadth, volatility, rates, credit, the U.S. dollar, oil, gold, and BTC. Connect each event to its transmission path, observed asset response, and confirming or invalidating condition. Never invent a missing market value.
 
-Before treating `NFCIRISK`, `HYG/LQD`, `WALCL`, `WDTGAL`, `RRPONTSYD`, `DTWEXBGS`, `CLUSDT`, `XAUUSDT`, or spot `BTCUSDT` as unavailable, follow the market-data contract: generate the exact packaged public-source plan and execute `PYTHONPATH=<skill-path>/scripts python3 -m world_memory collect-market-data --now UTC [--timeout SEC]`. The plan alone is not an attempt. Use every collector member with `status:"ok"`, including valid lagged FRED observations with their actual dates. A shell/sandbox network denial is not source unavailability: attempt the contract's exact official web/browser fallback, retain every dated observation it exposes, and mark only an unsupported change window as partial. Create a source gap only after both acquisition paths fail. Preserve each actual observation time and fetched time; weekly, daily, and live values form one collection-window snapshot, not one simultaneous timestamp.
+Before treating `NFCIRISK`, `HYG/LQD`, `RSP/SPY`, `WALCL`, `WDTGAL`, `RRPONTSYD`, `DTWEXBGS`, `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `SPYUSDT`, or spot `BTCUSDT` as unavailable, follow the market-data contract: generate the exact packaged public-source plan and execute `PYTHONPATH=<skill-path>/scripts python3 -m world_memory collect-market-data --now UTC [--timeout SEC]`. The plan alone is not an attempt. Use every collector member with `status:"ok"`, including valid lagged FRED observations with their actual dates. A shell/sandbox network denial is not source unavailability: attempt the contract's exact official web/browser fallback, retain every dated observation it exposes, and mark only an unsupported change window as partial. Create a source gap only after both acquisition paths fail. Preserve each actual observation time and fetched time; weekly, daily, and live values form one collection-window snapshot, not one simultaneous timestamp.
 
 Keep these two `signalRadar` axes separate:
 
@@ -75,23 +75,27 @@ Keep these two `signalRadar` axes separate:
 
 If any net-liquidity component is missing or `n/a`, do not compute a partial, proxy, synthetic, or neutral estimate. Name every missing component in the note and `dataQuality.gaps`, lower confidence, and represent the axis without a numeric score (`score:null`) or omit the scored signal when the output schema permits. Do not use `50` or another neutral value. For any missing cross-asset input, mark the data gap and distinguish unavailable data from neutral evidence.
 
-Use `DTWEXBGS` only as the Fed nominal broad U.S. dollar index, never as ICE DXY. Use `CLUSDT` and `XAUUSDT` as Binance USDⓈ-M perpetual references with venue/basis/funding caveats, not official WTI settlement or official gold spot/fix. Use `BTCUSDT` from Binance spot and retain its USDT denomination. Binance `priceChangePercent` is a rolling 24-hour change, never a regular-session daily return.
+Use `DTWEXBGS` only as the Fed nominal broad U.S. dollar index, never as ICE DXY. Use `CLUSDT`, `XAUUSDT`, `QQQUSDT`, and `SPYUSDT` as Binance USDⓈ-M perpetual references with venue/basis/funding caveats, not official settlement, spot/fix, or ETF closes. Use `BTCUSDT` from Binance spot and retain its USDT denomination. Binance `priceChangePercent` is a rolling 24-hour change, never a regular-session daily return.
+
+Keep live U.S. equity direction and regular-session breadth distinct. Use current `QQQUSDT` and `SPYUSDT` for fast 24/7 repricing and event-reaction evidence. Use `RSP/SPY` only as regular-session close-based breadth, with its actual observation date and 1-, 5-, and 20-session ratio changes. Describe a positive five-session change as breadth expanding and a negative change as breadth contracting. Never infer breadth from the two live perpetuals alone, and do not mix an ETF-close leg with an index-level or different-provider leg.
 
 Keep each radar note to one or two plain-language Korean interpretation sentences. Put formulas, scope, and score direction in `methodology`, not the note.
 
-The complete cross-asset snapshot belongs in the six-hour synthesis. In an hourly delta briefing, include cross-asset evidence only when it changed materially since the previous visible Report, directly reacts to a new development, or confirms or invalidates that development. An unchanged cross-asset snapshot is neither a headline nor a required hourly section; keep `signalRadar` empty when it adds no decision-relevant delta and do not render a boilerplate “no change” paragraph.
+The complete cross-asset snapshot belongs in every scheduled full-size Report so the latest retained output remains self-contained. Keep unchanged observations concise and dated; use the narrative to emphasize only material changes, direct reactions, confirmations, or invalidations. A direct material hourly briefing outside the scheduled automation may still limit cross-asset evidence to the decision-relevant delta.
 
-## Hourly delta briefing
+## Hourly cumulative full report
 
-The hourly delta briefing answers three questions: what is new, why it matters, and where it transmits—especially to the US or KR. Rank newly verified developments using intrinsic importance plus the editorial geography and domain priorities. Show at most five distinct developments, merge duplicate headlines, and lead with the consequence rather than the source count.
+Every successful active scheduled non-due Run creates one cumulative full-size Report with `Report Type=hourly-briefing`. Its evidence window is `(latest committed integration cutoff, current collection cutoff]`: load every complete valid committed Feed Batch group in that range, add the current Run's complete verified Feed Batch group, deduplicate by full fingerprint, and combine the result with prior current committed Memory. At 01:00 after a 00:00 integration this is the 00:00–01:00 accumulation; at 05:00 it is the 00:00–05:00 accumulation. Do not mark feed items processed, create Memory revisions, complete suggestions, or advance the integration cutoff.
 
-Do not repeat a prior development unless the new item changes its facts, importance, transmission, confirmation, or invalidation. Do not delay a verified company event until the six-hour report merely because a policy story has broader reach. If no event passes a material gate, commit the permitted evidence and remain silent under the existing output policy.
+The scheduled hourly Report answers what is new, what remains current, why it matters, and where it transmits—especially to the US or KR. Rank verified developments using intrinsic importance plus the editorial geography and domain priorities. Merge duplicate headlines and lead with the consequence rather than the source count. It uses the same complete Report-v2 fields and full-size Korean section order as a six-hour Report; `Material Change` controls emphasis and urgency, not whether the Report exists.
+
+Within the cumulative window, retain still-relevant verified developments so the latest output is sufficient on its own, while compressing unchanged repeats and clearly identifying what changed since the previous visible Report. Do not delay a verified company event until the six-hour report merely because a policy story has broader reach. If no event passes a material gate, state that judgment inside the full-size Report and keep the conditional scenarios, current Memory interpretation, next checks, sources, and data gaps evidence-bound.
 
 ## Six-hour synthesis and Report v2
 
 Use committed Feed Batch items with canonical `fetchedAt` in `(previous committed integration cutoff, current collection cutoff]`, prior current committed Memory revisions, prior committed Reports, current verified sources, and available market data. Items after the cutoff remain for the next integration. Exclude every child whose parent Run is not committed.
 
-The six-hour integration is the cumulative synthesis. Reconsider every deduplicated `high` and `medium` development in the integration window, including events already shown in an hourly briefing, and explain how the accumulated evidence changes the prior view. Include qualified company and industry developments as distinct evidence rather than reducing the report to macro, policy, or geopolitics. Do not drop a verified Tier-1 company or industry development merely because a macro or policy item has broader reach; when space is constrained, merge duplicates and routine follow-ups before removing a distinct Tier-1 event.
+The six-hour integration uses the same cumulative synthesis window and presentation depth as the scheduled hourly Report, then additionally commits evidence-supported Memory revisions and suggestion completions. Reconsider every deduplicated `high` and `medium` development in the integration window, including events already shown in an hourly Report, and explain how the accumulated evidence changes the prior view. Include qualified company and industry developments as distinct evidence rather than reducing the report to macro, policy, or geopolitics. Do not drop a verified Tier-1 company or industry development merely because a macro or policy item has broader reach; when space is constrained, merge duplicates and routine follow-ups before removing a distinct Tier-1 event.
 
 Explain what changed since the previous Report, the causal transmission path, observed or expected asset response, counterevidence, and the next verification point. Express portfolio actions as conditional observation, confirmation, sizing, or hedge considerations, not unsupported buy/sell commands.
 
@@ -101,7 +105,7 @@ Report payloads may carry additional analysis/domain top-level fields. The exact
 
 The canonical Report payload has no `runKey`; bind it through the physical Report key, scalar `Run Key`, exact `Run` relation, and fetched parent Run. Project properties deterministically: `As Of = payload.asOf = Coverage End = parent Collection Cutoff`; stance/confidence come from the payload; `Data Gap Count` is the length of `dataQuality.gaps`; and `Material Change` comes from the parent. For a non-genesis six-hour Report, `Coverage Start` is the prior cutoff encoded in the Integration Key. Genesis/hourly start is empty or canonical UTC and, when present, no later than the end.
 
-The direct Report validator also binds the Report type to the fresh parent projection. A `six-hour` Report requires parent `Integration Due=true`, `Integration Performed=true`, `Notification Plan=six-hour`, a nonempty matching canonical Integration Key, and visibility true. An `hourly-briefing` Report requires parent `Integration Due=false`, `Integration Performed=false`, `Material Change=true`, `Notification Plan=hourly-briefing`, empty parent/Report Integration Keys, and visibility true. These booleans and projection fields are type-strict; no payload self-claim substitutes for the parent. At precommit, the exact inventory matrix is one six-hour and no hourly when integration is performed, one hourly and no six-hour for material non-integration, and no Report with `silent` for nonmaterial non-integration.
+The direct Report validator also binds the Report type to the fresh parent projection. A `six-hour` Report requires parent `Integration Due=true`, `Integration Performed=true`, `Notification Plan=six-hour`, a nonempty matching canonical Integration Key, and visibility true. An `hourly-briefing` Report requires parent `Integration Due=false`, `Integration Performed=false`, `Notification Plan=hourly-briefing`, empty parent/Report Integration Keys, and visibility true; a scheduled parent may have either boolean `Material Change`, while a direct parent still requires `Material Change=true`. These booleans and projection fields are type-strict; no payload self-claim substitutes for the parent. At precommit, the exact scheduled inventory matrix is one six-hour and no hourly when integration is performed, or one hourly and no six-hour when it is not. A direct non-integration Run retains one hourly Report for material change and no Report with `silent` when nonmaterial.
 
 Every visible Report requires nonempty Korean rendering whose digest and claims match the canonical payload. Resolve each ordered UUID in `Evidence Records` uniquely to either a current expected Memory child under the same parent or a prior committed Memory row. Never cite Memory under another preparing, failed, or superseded Run. An empty evidence relation is valid only when no Memory record truthfully supports the Report.
 
@@ -166,7 +170,7 @@ Do not assign unsupported probabilities. Keep `signalRadar` and `highlights` to 
 
 ## Korean output contracts
 
-Render a material hourly briefing in Korean with these sections, in order:
+Render a direct material hourly briefing outside the scheduled automation in Korean with these sections, in order:
 
 1. `한 줄 판단`
 2. `새로운 중요 발전` — at most five
@@ -177,7 +181,7 @@ Render a material hourly briefing in Korean with these sections, in order:
 7. `다음 확인 지점`
 8. `출처`
 
-Render every successful six-hour report in Korean with these sections, in order:
+Render every successful scheduled Report and every six-hour Report in Korean with these sections, in order:
 
 1. `한 줄 판단`
 2. `현재 해석`
@@ -214,4 +218,4 @@ Memory payloads may carry additional record-type/domain top-level fields. The ex
 
 Normalize suggestion status to `open|watching|completed`. Treat every model proposal as untrusted: a proposal field such as `mutationSucceeded` is never execution evidence. Keep a read-only investigation `watching`. Mark `completed` only after the caller supplies observed authoritative success from one of the six allowed mutations. Never complete a failed change. Require nonempty verified evidence for brief/state writes; reject a state with empty evidence/domain sources or `Verified Evidence=false`. Bind action, target, confidence, stable-derived Record Key, dedupe/continuity fields, and predecessor relation to the canonical payload and committed revision chain before commit.
 
-Obey the policy categories independently: `schemaMutation`, `childMutation`, `cacheMutation`, `memoryMutation`, and `completeSuggestions`. `Autopilot Enabled=false` makes the last two false while an active enabled Run may still collect, analyze, create Run/Feed Batch/Report children, and reconcile cache. Disabled/paused/error direct invocations are read-only; blocked scheduled invocations make every mutation false. Require verified sources before a state mutation and record action, target, evidence, confidence, and result in the Run audit and canonical Memory payload.
+Obey the policy categories independently: `schemaMutation`, `childMutation`, `cacheMutation`, `memoryMutation`, and `completeSuggestions`. `Autopilot Enabled=false` makes the last two false while an active enabled Run may still collect, analyze, create Run/Feed Batch/Report children, and reconcile cache. Even when those policy permissions are true, a non-integration Run creates no Memory child and completes no suggestion. Disabled/paused/error direct invocations are read-only; blocked scheduled invocations make every mutation false. Require verified sources before an integration-time state mutation and record action, target, evidence, confidence, and result in the Run audit and canonical Memory payload.

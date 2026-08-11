@@ -1925,6 +1925,8 @@ def validate_child_page(
         if not isinstance(page.get("Created At"), str) or not page.get("Created At"):
             errors.append("Feed Created At must be observed")
     elif kind == "memory":
+        if parent_run.get("Integration Performed") is not True:
+            errors.append("Memory child requires parent Integration Performed true")
         errors.extend(
             _validate_memory_payload(
                 page,
@@ -2076,8 +2078,11 @@ def validate_child_page(
                 )
             if integration != "" or parent_integration != "":
                 errors.append("hourly Report Integration Key must be empty")
-            if parent_material is not True:
-                errors.append("hourly Report requires material change and User Visible")
+            parent_trigger = parent_run.get("Trigger")
+            if parent_trigger != "scheduled" and parent_material is not True:
+                errors.append(
+                    "direct hourly Report requires material change and User Visible"
+                )
             if isinstance(coverage_start, str) and coverage_start != "" and not _is_canonical_utc(coverage_start):
                 errors.append("hourly Report Coverage Start must be empty or canonical UTC")
         if (
@@ -2619,6 +2624,11 @@ def verify_precommit_snapshot(
     integration_value = expected_run.get("Integration Key")
     notification_plan = expected_run.get("Notification Plan")
     material_change = expected_run.get("Material Change")
+    if integration_performed is False:
+        if child_snapshots.get("memory"):
+            errors.append("non-integration precommit must not contain Memory children")
+        if completion_ids:
+            errors.append("non-integration precommit must not complete suggestions")
     if (
         expected_trigger == "force-world-memory"
         and integration_performed is not True
@@ -2666,22 +2676,31 @@ def verify_precommit_snapshot(
             errors.append(
                 "six-hour notification requires Integration Performed"
             )
-        if material_change is True:
+        if expected_trigger == "scheduled":
             if notification_plan != "hourly-briefing":
                 errors.append(
-                    "material non-integration precommit requires hourly-briefing notification"
+                    "scheduled non-integration precommit requires hourly-briefing notification"
                 )
             if len(hourly_reports) != 1 or len(all_reports) != 1:
                 errors.append(
-                    "material non-integration precommit requires exactly one hourly Report"
+                    "scheduled non-integration precommit requires exactly one hourly Report"
+                )
+        elif material_change is True:
+            if notification_plan != "hourly-briefing":
+                errors.append(
+                    "material direct non-integration precommit requires hourly-briefing notification"
+                )
+            if len(hourly_reports) != 1 or len(all_reports) != 1:
+                errors.append(
+                    "material direct non-integration precommit requires exactly one hourly Report"
                 )
         elif material_change is False:
             if notification_plan != "silent":
                 errors.append(
-                    "non-material precommit requires a silent notification plan"
+                    "non-material direct precommit requires a silent notification plan"
                 )
             if all_reports:
-                errors.append("non-material precommit must not contain Reports")
+                errors.append("non-material direct precommit must not contain Reports")
 
     if not child_snapshots.get("feed"):
         errors.append("precommit requires at least one Feed Batch child")

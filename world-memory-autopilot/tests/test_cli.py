@@ -224,11 +224,13 @@ class CliContractTests(unittest.TestCase):
             "예약 본문에 내장된 고정 권위",
             "초기화, 스키마 변경, 자동 복구, 원장 supersession",
             "대체 Hub 탐색",
-            "정규 6시간 통합 보고서나 정책상 오류",
-            "비통합·비중요 실행은 스킬 정책대로 침묵",
+            "매시간 누적 풀사이즈 보고서",
+            "월드 메모리 통합은 6시간 게이트가 열릴 때만",
+            "직전 커밋된 6시간 통합 이후 현재 수집 시점까지",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, prompt)
+        self.assertNotIn("비통합·비중요 실행은 스킬 정책대로 침묵", prompt)
 
     def test_render_scheduled_prompt_accepts_stdin_and_rejects_invalid_registry(self):
         valid = run_cli_raw(
@@ -315,15 +317,27 @@ class CliContractTests(unittest.TestCase):
         ratio = plan["creditRatio"]
         self.assertEqual(ratio["symbols"], ["HYG", "LQD"])
         self.assertEqual(
+            ratio["sourceOrder"],
+            ["nasdaq-close", "ishares-nav", "yahoo-close", "cache"],
+        )
+        self.assertIn("api.nasdaq.com/api/quote/HYG/historical", ratio["nasdaqHistoryUrls"]["HYG"])
+        self.assertIn("portfolioId=239565", ratio["isharesHistoryUrls"]["HYG"])
+        self.assertEqual(
             ratio.get("historyUrls"),
             {
                 "HYG": "https://query1.finance.yahoo.com/v8/finance/chart/HYG?events=history&includeAdjustedClose=true&interval=1d&range=3mo",
                 "LQD": "https://query1.finance.yahoo.com/v8/finance/chart/LQD?events=history&includeAdjustedClose=true&interval=1d&range=3mo",
             },
         )
-        self.assertEqual(ratio["priceField"], "Close")
+        self.assertEqual(ratio["preferredValueBasis"], "Close")
         self.assertEqual(ratio["alignment"], "inner-common-session")
-        self.assertEqual(ratio["formula"], "HYG Close / LQD Close")
+        self.assertEqual(
+            ratio["formulas"],
+            {
+                "Close": "HYG Close / LQD Close",
+                "NAV": "HYG NAV per Share / LQD NAV per Share",
+            },
+        )
         self.assertEqual(ratio["change5Sessions"], "(ratio_t / ratio_t-5 - 1) * 100")
 
         derived = {item["id"]: item for item in plan["derived"]}
@@ -338,7 +352,10 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(derived["US_NET_LIQUIDITY"]["changeWeeks"], [1, 4, 13])
 
         binance = {item["symbol"]: item for item in plan["binance"]}
-        self.assertEqual(set(binance), {"CLUSDT", "XAUUSDT", "BTCUSDT"})
+        self.assertEqual(
+            set(binance),
+            {"CLUSDT", "XAUUSDT", "BTCUSDT", "QQQUSDT", "SPYUSDT"},
+        )
         self.assertEqual(
             binance["CLUSDT"]["url"],
             "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=CLUSDT",
@@ -349,11 +366,30 @@ class CliContractTests(unittest.TestCase):
             "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT",
         )
         self.assertEqual(binance["BTCUSDT"]["market"], "spot")
+        self.assertEqual(binance["QQQUSDT"]["role"], "us-growth-equity-proxy")
+        self.assertEqual(binance["SPYUSDT"]["role"], "us-large-cap-equity-proxy")
+        self.assertEqual(binance["QQQUSDT"]["market"], "usdm-perpetual")
+        self.assertEqual(binance["SPYUSDT"]["market"], "usdm-perpetual")
         self.assertEqual(
             binance["BTCUSDT"]["fields"],
             ["lastPrice", "priceChangePercent", "closeTime", "quoteVolume", "count"],
         )
         self.assertEqual(plan["collection"]["binanceWindow"], "rolling-24h")
+
+        breadth = plan["equityBreadth"]
+        self.assertEqual(breadth["symbols"], ["RSP", "SPY"])
+        self.assertEqual(
+            breadth["sourceOrder"],
+            ["nasdaq-close", "sp-global-price-return", "yahoo-close", "cache"],
+        )
+        self.assertIn(
+            "api.nasdaq.com/api/quote/RSP/historical",
+            breadth["nasdaqHistoryUrls"]["RSP"],
+        )
+        self.assertIn("indexId=370", breadth["spGlobalHistoryUrls"]["RSP"])
+        self.assertIn("indexId=340", breadth["spGlobalHistoryUrls"]["SPY"])
+        self.assertEqual(breadth["changeSessions"], [1, 5, 20])
+        self.assertEqual(breadth["minimumCommonSessions"], 21)
         self.assertTrue(plan["failurePolicy"]["attemptIndependently"])
         self.assertTrue(plan["failurePolicy"]["netLiquidityRequiresAllComponents"])
 

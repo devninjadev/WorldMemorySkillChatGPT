@@ -13,7 +13,7 @@ import tempfile
 from typing import Any, Callable, MutableSequence, Sequence
 
 
-REQUIRED_MODULES = ("yfinance", "pandas", "numpy")
+REQUIRED_MODULES = ("yfinance", "pandas", "numpy", "xlrd")
 
 
 class DependencyBootstrapError(RuntimeError):

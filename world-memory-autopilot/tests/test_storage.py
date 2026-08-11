@@ -203,9 +203,14 @@ def validation_parent(
     *,
     material_change: bool = False,
     integration_key: str = "",
+    integration_performed: bool = False,
 ) -> dict:
     run = prepared_run(page_id=page_id, integration_key=integration_key)
     run["Material Change"] = material_change
+    run["Integration Due"] = integration_performed
+    run["Integration Performed"] = integration_performed
+    if integration_performed:
+        run["Notification Plan"] = "six-hour"
     if material_change and not integration_key:
         run["Notification Plan"] = "hourly-briefing"
     return run
@@ -515,6 +520,33 @@ def strict_precommit_context(current: dict, *supplied_pages: dict) -> dict:
         )
         pages.append(report)
         six_hour_reports.append(report)
+    hourly_reports = [
+        page
+        for page in pages
+        if page.get("Report Type") == "hourly-briefing"
+    ]
+    if (
+        run.get("Trigger") == "scheduled"
+        and not run["Integration Key"]
+        and not hourly_reports
+    ):
+        payload = valid_report_payload()
+        report, _expected = child_page(
+            "report",
+            f"hourly-report-for-{run['page_id']}",
+            run["page_id"],
+            {
+                "Report Key": f"{run['Run Key']}:report:hourly",
+                "Run Key": run["Run Key"],
+                "Integration Key": "",
+                "Report Type": "hourly-briefing",
+                "Material Change": run["Material Change"],
+            },
+            payload,
+            "한국어 시간별 누적 보고서",
+        )
+        pages.append(report)
+        hourly_reports.append(report)
     feed_pages = [page for page in pages if "Batch Key" in page]
     if not feed_pages:
         payload = feed_batch_payload(
@@ -532,12 +564,14 @@ def strict_precommit_context(current: dict, *supplied_pages: dict) -> dict:
             "Feed Success Count": first_feed["Feed Success Count"],
             "Feed Failure Count": first_feed["Feed Failure Count"],
             "New Item Count": first_feed["New Item Count"],
-            "Material Change": bool(visible_reports),
+            "Material Change": any(
+                page.get("Material Change") is True for page in visible_reports
+            ),
             "Integration Due": bool(six_hour_reports),
             "Integration Performed": bool(six_hour_reports),
             "Notification Plan": (
                 "six-hour" if six_hour_reports
-                else "hourly-briefing" if visible_reports
+                else "hourly-briefing" if hourly_reports
                 else "silent"
             ),
             "body": encode_notion_body(run_audit(*pages)),
@@ -1663,7 +1697,8 @@ class ChildReadBackAndPrecommitTests(unittest.TestCase):
         self.assertEqual(
             task2_call(
                 "validate_child_page", "memory", page, expected,
-                validation_parent("parent-2"), operational_installation(),
+                validation_parent("parent-2", integration_performed=True),
+                operational_installation(),
             ), []
         )
         for field, value in (
@@ -1674,7 +1709,8 @@ class ChildReadBackAndPrecommitTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertTrue(task2_call(
                     "validate_child_page", "memory", {**page, field: value}, expected,
-                    validation_parent("parent-2"), operational_installation(),
+                    validation_parent("parent-2", integration_performed=True),
+                    operational_installation(),
                 ))
 
     def test_child_set_requires_exact_unique_keys_pages_and_parent(self):

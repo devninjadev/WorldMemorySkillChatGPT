@@ -5,11 +5,13 @@ from __future__ import annotations
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+import html
 from io import BytesIO, StringIO
 import json
 import math
 import os
 from pathlib import Path
+import re
 from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -45,16 +47,39 @@ BINANCE_TICKERS = (
         "spot",
         "https://data-api.binance.vision/api/v3/ticker/24hr",
     ),
+    (
+        "QQQUSDT",
+        "us-growth-equity-proxy",
+        "usdm-perpetual",
+        "https://fapi.binance.com/fapi/v1/ticker/24hr",
+    ),
+    (
+        "SPYUSDT",
+        "us-large-cap-equity-proxy",
+        "usdm-perpetual",
+        "https://fapi.binance.com/fapi/v1/ticker/24hr",
+    ),
 )
-USER_AGENT = "WorldMemoryAutopilot/2.0 (public market collector)"
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0 Safari/537.36 "
+    "WorldMemoryAutopilot/2.0"
+)
 MAX_EXCHANGE_CLOCK_SKEW_SECONDS = 2.0
 FetchText = Callable[[str, float], str]
 FetchBytes = Callable[[str, float], bytes]
 FinanceHistory = Callable[[float], dict[str, dict[date, float]]]
+BreadthFinanceHistory = Callable[[float], dict[str, dict[date, float]]]
 Clock = Callable[[], datetime]
-MARKET_CACHE_SCHEMA_VERSION = 1
+MARKET_CACHE_SCHEMA_VERSION = 2
 CREDIT_CACHE_REFRESH_SECONDS = 6 * 60 * 60
 CREDIT_CACHE_MAX_OBSERVATION_DAYS = 7
+CREDIT_SYMBOLS = ("HYG", "LQD")
+ISHARES_PORTFOLIO_IDS = {"HYG": "239565", "LQD": "239566"}
+BREADTH_SYMBOLS = ("RSP", "SPY")
+BREADTH_MINIMUM_COMMON_SESSIONS = 21
+BREADTH_CACHE_MAX_OBSERVATION_DAYS = 7
+SP_GLOBAL_INDEX_IDS = {"RSP": "370", "SPY": "340"}
 
 
 def _url(base: str, parameters: list[tuple[str, str]]) -> str:
@@ -64,6 +89,85 @@ def _url(base: str, parameters: list[tuple[str, str]]) -> str:
 def market_data_plan(now: str) -> dict:
     planned = parse_utc(now)
     start_date = (planned - timedelta(days=180)).date().isoformat()
+    end_date = planned.date().isoformat()
+    yahoo_history_urls = {
+        symbol: _url(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            [
+                ("events", "history"),
+                ("includeAdjustedClose", "true"),
+                ("interval", "1d"),
+                ("range", "3mo"),
+            ],
+        )
+        for symbol in CREDIT_SYMBOLS
+    }
+    nasdaq_history_urls = {
+        symbol: _url(
+            f"https://api.nasdaq.com/api/quote/{symbol}/historical",
+            [
+                ("assetclass", "etf"),
+                ("fromdate", start_date),
+                ("todate", end_date),
+                ("limit", "500"),
+            ],
+        )
+        for symbol in CREDIT_SYMBOLS
+    }
+    ishares_history_urls = {
+        symbol: _url(
+            "https://www.blackrock.com/varnish-api/blk-one01-product-data/"
+            "product-data/api/v1/get-fund-document",
+            [
+                ("appSubType", "ISHARES"),
+                ("appType", "PRODUCT_PAGE"),
+                ("component", "fundDownload"),
+                ("locale", "en_US"),
+                ("portfolioId", ISHARES_PORTFOLIO_IDS[symbol]),
+                ("targetSite", "us-ishares"),
+                ("userType", "individual"),
+            ],
+        )
+        for symbol in CREDIT_SYMBOLS
+    }
+    breadth_nasdaq_history_urls = {
+        symbol: _url(
+            f"https://api.nasdaq.com/api/quote/{symbol}/historical",
+            [
+                ("assetclass", "etf"),
+                ("fromdate", start_date),
+                ("todate", end_date),
+                ("limit", "500"),
+            ],
+        )
+        for symbol in BREADTH_SYMBOLS
+    }
+    breadth_yahoo_history_urls = {
+        symbol: _url(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            [
+                ("events", "history"),
+                ("includeAdjustedClose", "true"),
+                ("interval", "1d"),
+                ("range", "6mo"),
+            ],
+        )
+        for symbol in BREADTH_SYMBOLS
+    }
+    sp_global_history_urls = {
+        symbol: _url(
+            "https://www.spglobal.com/spdji/en/idsexport/file.xls",
+            [
+                ("hostIdentifier", "48190c8c-42c4-46af-8d1a-0cd5db894797"),
+                ("indexId", SP_GLOBAL_INDEX_IDS[symbol]),
+                ("languageId", "1"),
+                ("redesignExport", "true"),
+                ("selectedModule", "PerformanceTableView"),
+                ("selectedSubModule", "Daily"),
+            ],
+        )
+        for symbol in BREADTH_SYMBOLS
+    }
     fields = ["lastPrice", "priceChangePercent", "closeTime", "quoteVolume", "count"]
     return {
         "schemaVersion": 1,
@@ -106,28 +210,51 @@ def market_data_plan(now: str) -> dict:
             ],
         },
         "creditRatio": {
-            "provider": "finance-history-or-yfinance",
-            "symbols": ["HYG", "LQD"],
-            "historyUrls": {
-                symbol: _url(
-                    f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                    [
-                        ("events", "history"),
-                        ("includeAdjustedClose", "true"),
-                        ("interval", "1d"),
-                        ("range", "3mo"),
-                    ],
-                )
-                for symbol in ("HYG", "LQD")
-            },
+            "provider": "priority-fallback",
+            "symbols": list(CREDIT_SYMBOLS),
+            "sourceOrder": ["nasdaq-close", "ishares-nav", "yahoo-close", "cache"],
+            "nasdaqHistoryUrls": nasdaq_history_urls,
+            "isharesHistoryUrls": ishares_history_urls,
+            "yahooHistoryUrls": yahoo_history_urls,
+            # Backward-compatible alias for callers that inspect the Yahoo direct fallback.
+            "historyUrls": yahoo_history_urls,
             "period": "3mo",
             "interval": "1d",
+            "preferredValueBasis": "Close",
             "priceField": "Close",
             "autoAdjust": False,
             "alignment": "inner-common-session",
             "formula": "HYG Close / LQD Close",
+            "formulas": {
+                "Close": "HYG Close / LQD Close",
+                "NAV": "HYG NAV per Share / LQD NAV per Share",
+            },
             "change5Sessions": "(ratio_t / ratio_t-5 - 1) * 100",
             "minimumCommonSessions": 6,
+            "freshnessWarningCalendarDays": 7,
+        },
+        "equityBreadth": {
+            "provider": "priority-fallback",
+            "symbols": list(BREADTH_SYMBOLS),
+            "sourceOrder": [
+                "nasdaq-close",
+                "sp-global-price-return",
+                "yahoo-close",
+                "cache",
+            ],
+            "nasdaqHistoryUrls": breadth_nasdaq_history_urls,
+            "spGlobalHistoryUrls": sp_global_history_urls,
+            "yahooHistoryUrls": breadth_yahoo_history_urls,
+            "alignment": "inner-common-session",
+            "formulas": {
+                "Close": "RSP Close / SPY Close",
+                "Price Return Index": (
+                    "S&P 500 Equal Weight Price Return Index / "
+                    "S&P 500 Price Return Index"
+                ),
+            },
+            "changeSessions": [1, 5, 20],
+            "minimumCommonSessions": BREADTH_MINIMUM_COMMON_SESSIONS,
             "freshnessWarningCalendarDays": 7,
         },
         "derived": [
@@ -182,7 +309,10 @@ def _fetch_bytes(url: str, timeout: float) -> bytes:
     request = Request(
         url,
         headers={
-            "Accept": "application/zip,text/csv;q=0.9,*/*;q=0.1",
+            "Accept": (
+                "application/zip,application/vnd.ms-excel,application/xml;q=0.9,"
+                "text/csv;q=0.8,*/*;q=0.1"
+            ),
             "User-Agent": USER_AGENT,
         },
     )
@@ -280,29 +410,190 @@ def _parse_yahoo_history(payload: str, cutoff: datetime, symbol: str) -> dict[da
     return observations
 
 
-def _normalize_credit_histories(
-    raw_histories: object, cutoff: datetime
+def _parse_nasdaq_history(payload: str, cutoff: datetime, symbol: str) -> dict[date, float]:
+    document = json.loads(payload)
+    data = document.get("data")
+    if not isinstance(data, dict) or data.get("symbol") != symbol:
+        raise ValueError(f"{symbol} Nasdaq history symbol mismatch")
+    table = data.get("tradesTable")
+    rows = table.get("rows") if isinstance(table, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError(f"{symbol} Nasdaq history is missing rows")
+
+    observations: dict[date, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"{symbol} Nasdaq history row is malformed")
+        raw_day = row.get("date")
+        raw_close = row.get("close")
+        if not isinstance(raw_day, str) or not isinstance(raw_close, str):
+            raise ValueError(f"{symbol} Nasdaq history row is missing date or close")
+        observed_day = datetime.strptime(raw_day.strip(), "%m/%d/%Y").date()
+        if observed_day > cutoff.date():
+            continue
+        close = _finite_number(
+            raw_close.replace("$", "").replace(",", "").strip(),
+            field=f"{symbol} Nasdaq close",
+        )
+        if close <= 0:
+            raise ValueError(f"{symbol} Nasdaq close must be positive")
+        if observed_day in observations and observations[observed_day] != close:
+            raise ValueError(f"{symbol} Nasdaq has conflicting closes for {observed_day}")
+        observations[observed_day] = close
+    if not observations:
+        raise ValueError(f"{symbol} Nasdaq has no close on or before cutoff")
+    return dict(sorted(observations.items()))
+
+
+def _decode_ishares_workbook(payload: bytes) -> str:
+    if not payload:
+        raise ValueError("iShares history workbook is empty")
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in payload[:200]:
+        return payload.decode("utf-16")
+    return payload.decode("utf-8-sig", errors="replace")
+
+
+def _parse_ishares_history(payload: bytes, cutoff: datetime, symbol: str) -> dict[date, float]:
+    document = _decode_ishares_workbook(payload)
+    worksheet = re.search(
+        r"<(?:\w+:)?Worksheet\b[^>]*(?:\w+:)?Name\s*=\s*['\"]Historical['\"][^>]*>"
+        r"(.*?)</(?:\w+:)?Worksheet\s*>",
+        document,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if worksheet is None:
+        raise ValueError(f"{symbol} iShares workbook is missing Historical sheet")
+
+    observations: dict[date, float] = {}
+    for row_match in re.finditer(
+        r"<(?:\w+:)?Row\b[^>]*>(.*?)</(?:\w+:)?Row\s*>",
+        worksheet.group(1),
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        cells = [
+            html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+            for value in re.findall(
+                r"<(?:\w+:)?Data\b[^>]*>(.*?)</(?:\w+:)?Data\s*>",
+                row_match.group(1),
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        ]
+        if len(cells) < 2:
+            continue
+        try:
+            observed_day = date.fromisoformat(cells[0][:10])
+        except ValueError:
+            try:
+                observed_day = datetime.strptime(cells[0], "%b %d, %Y").date()
+            except ValueError:
+                continue
+        if observed_day > cutoff.date():
+            continue
+        nav = _finite_number(cells[1].replace(",", ""), field=f"{symbol} iShares NAV")
+        if nav <= 0:
+            raise ValueError(f"{symbol} iShares NAV must be positive")
+        if observed_day in observations and observations[observed_day] != nav:
+            raise ValueError(f"{symbol} iShares has conflicting NAVs for {observed_day}")
+        observations[observed_day] = nav
+    if not observations:
+        raise ValueError(f"{symbol} iShares has no NAV on or before cutoff")
+    return dict(sorted(observations.items()))
+
+
+def _parse_sp_global_history(payload: bytes, cutoff: datetime, symbol: str) -> dict[date, float]:
+    if not payload:
+        raise ValueError(f"{symbol} S&P Global workbook is empty")
+    from .bootstrap import ensure_runtime_dependencies
+
+    ensure_runtime_dependencies(required_modules=("pandas", "xlrd"))
+    import pandas as pd
+
+    try:
+        frame = pd.read_excel(BytesIO(payload), header=None, engine="xlrd")
+    except Exception as exc:
+        raise ValueError(f"{symbol} S&P Global workbook is unreadable") from exc
+    if frame is None or frame.empty:
+        raise ValueError(f"{symbol} S&P Global workbook contains no rows")
+
+    header_row = None
+    date_column = None
+    value_column = None
+    for row_index, row in frame.iterrows():
+        labels = [str(value).strip().lower() for value in row.tolist()]
+        for column_index, label in enumerate(labels):
+            if label in {"date", "effective date"} or label.endswith(" date"):
+                candidates = [
+                    index
+                    for index, candidate in enumerate(labels)
+                    if index != column_index
+                    and any(
+                        token in candidate
+                        for token in ("index level", "price return", "close", "value")
+                    )
+                ]
+                if candidates:
+                    header_row = row_index
+                    date_column = column_index
+                    value_column = candidates[0]
+                    break
+        if header_row is not None:
+            break
+    if header_row is None or date_column is None or value_column is None:
+        raise ValueError(f"{symbol} S&P Global workbook is missing date/value headers")
+
+    observations: dict[date, float] = {}
+    for row_index in range(int(header_row) + 1, len(frame.index)):
+        raw_day = frame.iloc[row_index, date_column]
+        raw_value = frame.iloc[row_index, value_column]
+        try:
+            observed_day = pd.to_datetime(raw_day, errors="raise").date()
+            value = _finite_number(raw_value, field=f"{symbol} S&P Global index level")
+        except (TypeError, ValueError):
+            continue
+        if observed_day > cutoff.date() or value <= 0:
+            continue
+        if observed_day in observations and observations[observed_day] != value:
+            raise ValueError(
+                f"{symbol} S&P Global has conflicting values for {observed_day}"
+            )
+        observations[observed_day] = value
+    if not observations:
+        raise ValueError(f"{symbol} S&P Global has no value on or before cutoff")
+    return dict(sorted(observations.items()))
+
+
+def _normalize_pair_histories(
+    raw_histories: object,
+    cutoff: datetime,
+    symbols: tuple[str, str],
+    label: str,
 ) -> dict[str, dict[date, float]]:
     if not isinstance(raw_histories, dict):
-        raise ValueError("HYG/LQD history provider returned a non-object")
+        raise ValueError(f"{label} history provider returned a non-object")
     normalized: dict[str, dict[date, float]] = {}
-    for symbol in ("HYG", "LQD"):
+    for symbol in symbols:
         raw_history = raw_histories.get(symbol)
         if not isinstance(raw_history, dict):
-            raise ValueError(f"HYG/LQD history provider is missing {symbol}")
+            raise ValueError(f"{label} history provider is missing {symbol}")
         history: dict[date, float] = {}
-        for raw_day, raw_close in raw_history.items():
+        for raw_day, raw_value in raw_history.items():
             observed_day = raw_day if isinstance(raw_day, date) else date.fromisoformat(str(raw_day))
             if observed_day > cutoff.date():
                 continue
-            close = _finite_number(raw_close, field=f"{symbol} close")
-            if close <= 0:
-                raise ValueError(f"{symbol} close must be positive")
-            history[observed_day] = close
+            value = _finite_number(raw_value, field=f"{symbol} value")
+            if value <= 0:
+                raise ValueError(f"{symbol} value must be positive")
+            history[observed_day] = value
         if not history:
-            raise ValueError(f"{symbol} has no close on or before cutoff")
+            raise ValueError(f"{symbol} has no value on or before cutoff")
         normalized[symbol] = dict(sorted(history.items()))
     return normalized
+
+
+def _normalize_credit_histories(
+    raw_histories: object, cutoff: datetime
+) -> dict[str, dict[date, float]]:
+    return _normalize_pair_histories(raw_histories, cutoff, CREDIT_SYMBOLS, "HYG/LQD")
 
 
 def _default_market_cache_path() -> Path:
@@ -322,6 +613,17 @@ def _load_credit_cache(path: Path | None, cutoff: datetime) -> dict | None:
         saved_at = parse_utc(payload["savedAt"])
         if saved_at > cutoff + timedelta(seconds=MAX_EXCHANGE_CLOCK_SKEW_SECONDS):
             return None
+        provider = payload["provider"]
+        value_basis = payload["valueBasis"]
+        source_urls = payload["sourceUrls"]
+        if not isinstance(provider, str) or not provider.strip():
+            return None
+        if value_basis not in {"Close", "NAV"}:
+            return None
+        if not isinstance(source_urls, dict) or set(source_urls) != set(CREDIT_SYMBOLS):
+            return None
+        if not all(isinstance(source_urls[symbol], str) and source_urls[symbol] for symbol in CREDIT_SYMBOLS):
+            return None
         histories = _normalize_credit_histories(payload["histories"], cutoff)
         common_dates = sorted(set(histories["HYG"]) & set(histories["LQD"]))
         if len(common_dates) < 6:
@@ -334,24 +636,49 @@ def _load_credit_cache(path: Path | None, cutoff: datetime) -> dict | None:
             "ageSeconds": max(0.0, (cutoff - saved_at).total_seconds()),
             "observationDate": observation_date,
             "histories": histories,
+            "provider": provider,
+            "valueBasis": value_basis,
+            "sourceUrls": source_urls,
         }
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
-def _write_credit_cache(path: Path | None, histories: dict[str, dict[date, float]], saved_at: str) -> None:
+def _write_credit_cache(
+    path: Path | None,
+    histories: dict[str, dict[date, float]],
+    saved_at: str,
+    *,
+    provider: str,
+    value_basis: str,
+    source_urls: dict[str, str],
+) -> None:
     if path is None:
         return
-    document = {
-        "schemaVersion": MARKET_CACHE_SCHEMA_VERSION,
-        "creditRatio": {
-            "savedAt": saved_at,
-            "histories": {
-                symbol: {day.isoformat(): value for day, value in history.items()}
-                for symbol, history in histories.items()
-            },
+    payload = {
+        "savedAt": saved_at,
+        "provider": provider,
+        "valueBasis": value_basis,
+        "sourceUrls": source_urls,
+        "histories": {
+            symbol: {day.isoformat(): value for day, value in history.items()}
+            for symbol, history in histories.items()
         },
     }
+    _write_market_cache_section(path, "creditRatio", payload)
+
+
+def _write_market_cache_section(path: Path, section: str, payload: dict) -> None:
+    document: dict = {"schemaVersion": MARKET_CACHE_SCHEMA_VERSION}
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing.get("schemaVersion") == MARKET_CACHE_SCHEMA_VERSION:
+                document.update(existing)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    document["schemaVersion"] = MARKET_CACHE_SCHEMA_VERSION
+    document[section] = payload
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(
@@ -361,7 +688,77 @@ def _write_credit_cache(path: Path | None, histories: dict[str, dict[date, float
     os.replace(temporary, path)
 
 
-def _yfinance_history(timeout: float) -> dict[str, dict[date, float]]:
+def _load_breadth_cache(path: Path | None, cutoff: datetime) -> dict | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if document.get("schemaVersion") != MARKET_CACHE_SCHEMA_VERSION:
+            return None
+        payload = document["equityBreadth"]
+        saved_at = parse_utc(payload["savedAt"])
+        if saved_at > cutoff + timedelta(seconds=MAX_EXCHANGE_CLOCK_SKEW_SECONDS):
+            return None
+        provider = payload["provider"]
+        value_basis = payload["valueBasis"]
+        source_urls = payload["sourceUrls"]
+        if value_basis not in {"Close", "Price Return Index"}:
+            return None
+        if not isinstance(provider, str) or not provider.strip():
+            return None
+        if not isinstance(source_urls, dict) or set(source_urls) != set(BREADTH_SYMBOLS):
+            return None
+        histories = _normalize_pair_histories(
+            payload["histories"], cutoff, BREADTH_SYMBOLS, "RSP/SPY"
+        )
+        common_dates = sorted(set(histories["RSP"]) & set(histories["SPY"]))
+        if len(common_dates) < BREADTH_MINIMUM_COMMON_SESSIONS:
+            return None
+        observation_date = common_dates[-1]
+        if (cutoff.date() - observation_date).days > BREADTH_CACHE_MAX_OBSERVATION_DAYS:
+            return None
+        return {
+            "savedAt": utc_iso(saved_at),
+            "ageSeconds": max(0.0, (cutoff - saved_at).total_seconds()),
+            "histories": histories,
+            "provider": provider,
+            "valueBasis": value_basis,
+            "sourceUrls": source_urls,
+        }
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _write_breadth_cache(
+    path: Path | None,
+    histories: dict[str, dict[date, float]],
+    saved_at: str,
+    *,
+    provider: str,
+    value_basis: str,
+    source_urls: dict[str, str],
+) -> None:
+    if path is None:
+        return
+    _write_market_cache_section(
+        path,
+        "equityBreadth",
+        {
+            "savedAt": saved_at,
+            "provider": provider,
+            "valueBasis": value_basis,
+            "sourceUrls": source_urls,
+            "histories": {
+                symbol: {day.isoformat(): value for day, value in history.items()}
+                for symbol, history in histories.items()
+            },
+        },
+    )
+
+
+def _yfinance_pair_history(
+    symbols: tuple[str, str], timeout: float, *, period: str
+) -> dict[str, dict[date, float]]:
     from .bootstrap import ensure_runtime_dependencies
 
     ensure_runtime_dependencies()
@@ -369,7 +766,7 @@ def _yfinance_history(timeout: float) -> dict[str, dict[date, float]]:
 
     def fetch_symbol(symbol: str) -> tuple[str, object]:
         frame = yf.Ticker(symbol).history(
-            period="3mo",
+            period=period,
             interval="1d",
             auto_adjust=False,
             actions=False,
@@ -381,13 +778,13 @@ def _yfinance_history(timeout: float) -> dict[str, dict[date, float]]:
 
     frames: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(fetch_symbol, symbol) for symbol in ("HYG", "LQD")]
+        futures = [executor.submit(fetch_symbol, symbol) for symbol in symbols]
         for future in futures:
             symbol, frame = future.result()
             frames[symbol] = frame
 
     histories: dict[str, dict[date, float]] = {}
-    for symbol in ("HYG", "LQD"):
+    for symbol in symbols:
         frame = frames[symbol]
         if frame is None or frame.empty:
             raise ValueError(f"Yahoo returned no usable {symbol} history")
@@ -406,6 +803,14 @@ def _yfinance_history(timeout: float) -> dict[str, dict[date, float]]:
                 history[observed_day] = close
         histories[symbol] = history
     return histories
+
+
+def _yfinance_history(timeout: float) -> dict[str, dict[date, float]]:
+    return _yfinance_pair_history(CREDIT_SYMBOLS, timeout, period="3mo")
+
+
+def _yfinance_breadth_history(timeout: float) -> dict[str, dict[date, float]]:
+    return _yfinance_pair_history(BREADTH_SYMBOLS, timeout, period="6mo")
 
 
 def _parse_fred_batch(payload: bytes, cutoff: datetime) -> dict[str, list[tuple[date, float]]]:
@@ -474,6 +879,7 @@ def collect_market_data(
     fetch_text: FetchText = _fetch_text,
     fetch_bytes: FetchBytes | None = None,
     finance_history: FinanceHistory | None = None,
+    breadth_finance_history: BreadthFinanceHistory | None = None,
     cache_path: Path | None = None,
     clock: Clock = _utc_now,
 ) -> dict:
@@ -488,13 +894,13 @@ def collect_market_data(
     if resolved_cache_path is None and fetch_text is _fetch_text:
         resolved_cache_path = _default_market_cache_path()
     cached_credit = _load_credit_cache(resolved_cache_path, cutoff)
-    fresh_credit_cache = bool(
-        cached_credit
-        and cached_credit["ageSeconds"] <= CREDIT_CACHE_REFRESH_SECONDS
-    )
+    cached_breadth = _load_breadth_cache(resolved_cache_path, cutoff)
     active_finance_history = finance_history
     if active_finance_history is None and fetch_text is _fetch_text:
         active_finance_history = _yfinance_history
+    active_breadth_finance_history = breadth_finance_history
+    if active_breadth_finance_history is None and fetch_text is _fetch_text:
+        active_breadth_finance_history = _yfinance_breadth_history
     gaps: list[dict] = []
     fred_results: dict[str, dict] = {}
     fred_history: dict[str, list[tuple[date, float]]] = {}
@@ -531,20 +937,22 @@ def collect_market_data(
             (f"fred:{source['id']}", fetch_text, source["url"])
             for source in plan["fred"]["series"]
         )
-    if not fresh_credit_cache:
-        if active_finance_history is not None:
-            request_specs.append(
-                (
-                    "credit:history",
-                    lambda _url, active_timeout: active_finance_history(active_timeout),
-                    "yfinance://HYG,LQD",
-                )
-            )
-        else:
-            request_specs.extend(
-                (f"yahoo:{symbol}", fetch_text, plan["creditRatio"]["historyUrls"][symbol])
-                for symbol in plan["creditRatio"]["symbols"]
-            )
+    request_specs.extend(
+        (
+            f"nasdaq:{symbol}",
+            fetch_text,
+            plan["creditRatio"]["nasdaqHistoryUrls"][symbol],
+        )
+        for symbol in plan["creditRatio"]["symbols"]
+    )
+    request_specs.extend(
+        (
+            f"breadth-nasdaq:{symbol}",
+            fetch_text,
+            plan["equityBreadth"]["nasdaqHistoryUrls"][symbol],
+        )
+        for symbol in plan["equityBreadth"]["symbols"]
+    )
     request_specs.extend(
         (f"binance:{source['symbol']}", fetch_text, source["url"])
         for source in plan["binance"]
@@ -649,157 +1057,269 @@ def collect_market_data(
     ratio_sources: dict[str, dict] = {}
     ratio_history: dict[str, dict[date, float]] = {}
     credit_cache_status: str | None = None
+    credit_provider: str | None = None
+    credit_value_basis: str | None = None
+    credit_source_urls: dict[str, str] = {}
+    credit_attempts: list[dict] = []
 
-    def apply_credit_cache(status: str) -> None:
-        nonlocal credit_cache_status
-        if cached_credit is None:
-            raise ValueError("credit cache is unavailable")
-        credit_cache_status = status
-        ratio_history.update(cached_credit["histories"])
-        for symbol, history in cached_credit["histories"].items():
-            observed_date = max(history)
-            ratio_sources[symbol] = {
-                "sourceId": symbol,
-                "status": "ok",
-                "sourceUrl": plan["creditRatio"]["historyUrls"][symbol],
-                "fetchedAt": cached_credit["savedAt"],
-                "cacheReadAt": started_at,
-                "cacheStatus": status,
-                "observationDate": observed_date.isoformat(),
-                "close": history[observed_date],
+    def record_credit_failure(
+        stage_id: str,
+        provider: str,
+        failed_attempts: list[dict],
+    ) -> None:
+        fetched_at = max((item["fetchedAt"] for item in failed_attempts), default=started_at)
+        reasons = [
+            str(item["error"]).strip() or f"{provider} request failed"
+            for item in failed_attempts
+            if item.get("error") is not None
+        ]
+        reason = "; ".join(dict.fromkeys(reasons)) or f"{provider} pair is incomplete"
+        rate_limited = any(bool(item.get("rateLimited")) for item in failed_attempts)
+        error_types = sorted(
+            {
+                str(item["errorType"])
+                for item in failed_attempts
+                if item.get("errorType")
             }
+        )
+        entry = {
+            "sourceId": stage_id,
+            "status": "failed",
+            "provider": provider,
+            "fetchedAt": fetched_at,
+            "reason": reason,
+            "rateLimited": rate_limited,
+        }
+        if error_types:
+            entry["errorTypes"] = error_types
+        credit_attempts.append(entry)
+        gaps.append(entry.copy())
 
-    def apply_direct_yahoo(direct_attempts: dict[str, dict]) -> None:
-        nonlocal credit_cache_status, ratio_history
-        ratio_history = {}
-        for symbol in plan["creditRatio"]["symbols"]:
-            source_url = plan["creditRatio"]["historyUrls"][symbol]
-            attempt = direct_attempts[f"yahoo:{symbol}"]
-            fetched_at = attempt["fetchedAt"]
+    def apply_pair(
+        *,
+        stage_id: str,
+        provider: str,
+        value_basis: str,
+        source_urls: dict[str, str],
+        pair_attempts: dict[str, dict],
+        parser: Callable[[object, datetime, str], dict[date, float]],
+        key_prefix: str,
+    ) -> bool:
+        nonlocal ratio_history, ratio_sources, credit_cache_status
+        nonlocal credit_provider, credit_value_basis, credit_source_urls
+        histories: dict[str, dict[date, float]] = {}
+        sources: dict[str, dict] = {}
+        normalized_attempts: list[dict] = []
+        for symbol in CREDIT_SYMBOLS:
+            attempt = pair_attempts[f"{key_prefix}:{symbol}"]
+            normalized_attempts.append(attempt)
             try:
                 if attempt["error"] is not None:
-                    raise ValueError(str(attempt["error"]).strip() or "Yahoo request failed")
-                history = _parse_yahoo_history(attempt["payload"], cutoff, symbol)
-                ratio_history[symbol] = history
+                    raise ValueError(
+                        str(attempt["error"]).strip() or f"{provider} request failed"
+                    )
+                history = parser(attempt["payload"], cutoff, symbol)
+                histories[symbol] = history
                 observed_date = max(history)
-                ratio_sources[symbol] = {
+                value = history[observed_date]
+                source = {
                     "sourceId": symbol,
                     "status": "ok",
-                    "sourceUrl": source_url,
-                    "fetchedAt": fetched_at,
+                    "sourceUrl": source_urls[symbol],
+                    "provider": provider,
+                    "valueBasis": value_basis,
+                    "fetchedAt": attempt["fetchedAt"],
                     "observationDate": observed_date.isoformat(),
-                    "close": history[observed_date],
+                    "value": value,
                 }
+                source["close" if value_basis == "Close" else "nav"] = value
+                sources[symbol] = source
             except (KeyError, IndexError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                reason = str(exc).strip() or "market source failed"
-                ratio_sources[symbol] = {
-                    "sourceId": symbol,
-                    "status": "failed",
-                    "sourceUrl": source_url,
-                    "fetchedAt": fetched_at,
-                    "error": reason,
-                }
-                gaps.append(
-                    {
-                        "sourceId": symbol,
-                        "status": "failed",
-                        "fetchedAt": fetched_at,
-                        "reason": reason,
-                    }
-                )
-        if len(ratio_history) == 2:
-            credit_cache_status = "refreshed"
-            _write_credit_cache(
-                resolved_cache_path,
-                ratio_history,
-                max(ratio_sources["HYG"]["fetchedAt"], ratio_sources["LQD"]["fetchedAt"]),
-            )
-        elif cached_credit is not None:
-            apply_credit_cache("stale-fallback")
-
-    if fresh_credit_cache:
-        apply_credit_cache("fresh-hit")
-    elif active_finance_history is not None:
-        attempt = attempts["credit:history"]
-        if attempt["error"] is None:
-            try:
-                ratio_history = _normalize_credit_histories(attempt["payload"], cutoff)
-                credit_cache_status = "refreshed"
-                for symbol, history in ratio_history.items():
-                    observed_date = max(history)
-                    ratio_sources[symbol] = {
-                        "sourceId": symbol,
-                        "status": "ok",
-                        "sourceUrl": plan["creditRatio"]["historyUrls"][symbol],
-                        "provider": "Yahoo Finance via yfinance",
-                        "fetchedAt": attempt["fetchedAt"],
-                        "cacheStatus": credit_cache_status,
-                        "observationDate": observed_date.isoformat(),
-                        "close": history[observed_date],
-                    }
-                _write_credit_cache(resolved_cache_path, ratio_history, attempt["fetchedAt"])
-            except (KeyError, OSError, TypeError, ValueError) as exc:
-                attempt = {
+                normalized_attempts[-1] = {
                     **attempt,
                     "error": exc,
                     "errorType": exc.__class__.__name__,
-                    "rateLimited": False,
                 }
-        if attempt["error"] is not None:
-            if attempt["errorType"] == "DependencyBootstrapError":
-                fallback_specs = [
-                    (f"yahoo:{symbol}", plan["creditRatio"]["historyUrls"][symbol])
-                    for symbol in plan["creditRatio"]["symbols"]
+        if len(histories) != len(CREDIT_SYMBOLS):
+            record_credit_failure(stage_id, provider, normalized_attempts)
+            return False
+        common_dates = sorted(set(histories["HYG"]) & set(histories["LQD"]))
+        if len(common_dates) < 6:
+            reason = ValueError(f"{provider} HYG/LQD requires at least six common sessions")
+            normalized_attempts[0] = {
+                **normalized_attempts[0],
+                "error": reason,
+                "errorType": "ValueError",
+            }
+            record_credit_failure(stage_id, provider, normalized_attempts)
+            return False
+
+        ratio_history = histories
+        ratio_sources = sources
+        credit_provider = provider
+        credit_value_basis = value_basis
+        credit_source_urls = dict(source_urls)
+        credit_cache_status = "refreshed"
+        fetched_at = max(source["fetchedAt"] for source in sources.values())
+        credit_attempts.append(
+            {
+                "sourceId": stage_id,
+                "status": "ok",
+                "provider": provider,
+                "fetchedAt": fetched_at,
+                "valueBasis": value_basis,
+            }
+        )
+        _write_credit_cache(
+            resolved_cache_path,
+            ratio_history,
+            fetched_at,
+            provider=provider,
+            value_basis=value_basis,
+            source_urls=credit_source_urls,
+        )
+        return True
+
+    nasdaq_ok = apply_pair(
+        stage_id="NASDAQ_HYG_LQD",
+        provider="Nasdaq",
+        value_basis="Close",
+        source_urls=plan["creditRatio"]["nasdaqHistoryUrls"],
+        pair_attempts=attempts,
+        parser=_parse_nasdaq_history,
+        key_prefix="nasdaq",
+    )
+
+    ishares_ok = False
+    if not nasdaq_ok:
+        if batch_fetch is None:
+            unavailable_attempt = {
+                "payload": None,
+                "fetchedAt": _clock_iso(clock),
+                "error": ValueError("iShares byte fetcher is unavailable"),
+                "errorType": "ValueError",
+                "rateLimited": False,
+            }
+            ishares_attempts = {
+                f"ishares:{symbol}": unavailable_attempt for symbol in CREDIT_SYMBOLS
+            }
+        else:
+            ishares_specs = [
+                (f"ishares:{symbol}", plan["creditRatio"]["isharesHistoryUrls"][symbol])
+                for symbol in CREDIT_SYMBOLS
+            ]
+            ishares_attempts: dict[str, dict] = {}
+            with ThreadPoolExecutor(max_workers=len(ishares_specs)) as executor:
+                futures = [
+                    (key, executor.submit(attempt_fetch, batch_fetch, url))
+                    for key, url in ishares_specs
                 ]
-                fallback_attempts: dict[str, dict] = {}
-                with ThreadPoolExecutor(max_workers=len(fallback_specs)) as executor:
-                    fallback_futures = [
-                        (key, executor.submit(attempt_fetch, fetch_text, url))
-                        for key, url in fallback_specs
-                    ]
-                    for key, future in fallback_futures:
-                        fallback_attempts[key] = future.result()
-                apply_direct_yahoo(fallback_attempts)
-                if len(ratio_history) == 2:
-                    attempt = {**attempt, "error": None}
-        if attempt["error"] is not None:
-            reason = str(attempt["error"]).strip() or "Yahoo history provider failed"
-            if cached_credit is not None:
-                apply_credit_cache("stale-fallback")
-                gaps.append(
-                    {
-                        "sourceId": "YAHOO_HYG_LQD",
-                        "status": "degraded",
-                        "fetchedAt": attempt["fetchedAt"],
-                        "reason": reason,
-                        "errorType": attempt["errorType"],
-                        "rateLimited": attempt["rateLimited"],
+                for key, future in futures:
+                    ishares_attempts[key] = future.result()
+        ishares_ok = apply_pair(
+            stage_id="ISHARES_HYG_LQD",
+            provider="iShares",
+            value_basis="NAV",
+            source_urls=plan["creditRatio"]["isharesHistoryUrls"],
+            pair_attempts=ishares_attempts,
+            parser=_parse_ishares_history,
+            key_prefix="ishares",
+        )
+
+    yahoo_ok = False
+    if not nasdaq_ok and not ishares_ok:
+        if active_finance_history is not None:
+            yahoo_attempt = attempt_fetch(
+                lambda _url, active_timeout: active_finance_history(active_timeout),
+                "yfinance://HYG,LQD",
+            )
+            if yahoo_attempt["error"] is None:
+                try:
+                    histories = _normalize_credit_histories(yahoo_attempt["payload"], cutoff)
+                    yahoo_attempts = {
+                        f"yfinance:{symbol}": {**yahoo_attempt, "payload": histories[symbol]}
+                        for symbol in CREDIT_SYMBOLS
                     }
-                )
-            else:
-                for symbol in plan["creditRatio"]["symbols"]:
-                    source_url = plan["creditRatio"]["historyUrls"][symbol]
-                    ratio_sources[symbol] = {
-                        "sourceId": symbol,
-                        "status": "failed",
-                        "sourceUrl": source_url,
-                        "fetchedAt": attempt["fetchedAt"],
-                        "error": reason,
-                        "errorType": attempt["errorType"],
-                        "rateLimited": attempt["rateLimited"],
-                    }
-                    gaps.append(
-                        {
-                            "sourceId": symbol,
-                            "status": "failed",
-                            "fetchedAt": attempt["fetchedAt"],
-                            "reason": reason,
-                            "errorType": attempt["errorType"],
-                            "rateLimited": attempt["rateLimited"],
-                        }
+                    yahoo_ok = apply_pair(
+                        stage_id="YAHOO_HYG_LQD",
+                        provider="Yahoo Finance via yfinance",
+                        value_basis="Close",
+                        source_urls=plan["creditRatio"]["yahooHistoryUrls"],
+                        pair_attempts=yahoo_attempts,
+                        parser=lambda payload, _cutoff, _symbol: payload,
+                        key_prefix="yfinance",
                     )
-    else:
-        apply_direct_yahoo(attempts)
+                except (KeyError, OSError, TypeError, ValueError) as exc:
+                    yahoo_attempt = {
+                        **yahoo_attempt,
+                        "error": exc,
+                        "errorType": exc.__class__.__name__,
+                    }
+            if not yahoo_ok and yahoo_attempt["errorType"] != "DependencyBootstrapError":
+                record_credit_failure(
+                    "YAHOO_HYG_LQD", "Yahoo Finance via yfinance", [yahoo_attempt]
+                )
+        if active_finance_history is None or (
+            not yahoo_ok and yahoo_attempt["errorType"] == "DependencyBootstrapError"
+        ):
+            yahoo_specs = [
+                (f"yahoo:{symbol}", plan["creditRatio"]["yahooHistoryUrls"][symbol])
+                for symbol in CREDIT_SYMBOLS
+            ]
+            yahoo_attempts: dict[str, dict] = {}
+            with ThreadPoolExecutor(max_workers=len(yahoo_specs)) as executor:
+                futures = [
+                    (key, executor.submit(attempt_fetch, fetch_text, url))
+                    for key, url in yahoo_specs
+                ]
+                for key, future in futures:
+                    yahoo_attempts[key] = future.result()
+            yahoo_ok = apply_pair(
+                stage_id="YAHOO_HYG_LQD",
+                provider="Yahoo Finance direct",
+                value_basis="Close",
+                source_urls=plan["creditRatio"]["yahooHistoryUrls"],
+                pair_attempts=yahoo_attempts,
+                parser=_parse_yahoo_history,
+                key_prefix="yahoo",
+            )
+
+    if not nasdaq_ok and not ishares_ok and not yahoo_ok and cached_credit is not None:
+        ratio_history = cached_credit["histories"]
+        credit_provider = cached_credit["provider"]
+        credit_value_basis = cached_credit["valueBasis"]
+        credit_source_urls = cached_credit["sourceUrls"]
+        credit_cache_status = (
+            "fresh-fallback"
+            if cached_credit["ageSeconds"] <= CREDIT_CACHE_REFRESH_SECONDS
+            else "stale-fallback"
+        )
+        for symbol, history in ratio_history.items():
+            observed_date = max(history)
+            value = history[observed_date]
+            ratio_sources[symbol] = {
+                "sourceId": symbol,
+                "status": "ok",
+                "sourceUrl": credit_source_urls[symbol],
+                "provider": credit_provider,
+                "valueBasis": credit_value_basis,
+                "fetchedAt": cached_credit["savedAt"],
+                "cacheReadAt": started_at,
+                "cacheStatus": credit_cache_status,
+                "observationDate": observed_date.isoformat(),
+                "value": value,
+                "close" if credit_value_basis == "Close" else "nav": value,
+            }
+        credit_attempts.append(
+            {
+                "sourceId": "CACHE_HYG_LQD",
+                "status": "ok",
+                "provider": credit_provider,
+                "fetchedAt": cached_credit["savedAt"],
+                "valueBasis": credit_value_basis,
+                "cacheStatus": credit_cache_status,
+            }
+        )
 
     missing_ratio = [symbol for symbol in ("HYG", "LQD") if symbol not in ratio_history]
     if missing_ratio:
@@ -807,6 +1327,7 @@ def collect_market_data(
             "status": "failed",
             "missingComponents": missing_ratio,
             "sources": ratio_sources,
+            "attempts": credit_attempts,
         }
     else:
         common_dates = sorted(set(ratio_history["HYG"]) & set(ratio_history["LQD"]))
@@ -821,7 +1342,12 @@ def collect_market_data(
                     "reason": reason,
                 }
             )
-            credit_ratio = {"status": "failed", "error": reason, "sources": ratio_sources}
+            credit_ratio = {
+                "status": "failed",
+                "error": reason,
+                "sources": ratio_sources,
+                "attempts": credit_attempts,
+            }
         else:
             ratios = [
                 ratio_history["HYG"][day] / ratio_history["LQD"][day]
@@ -830,16 +1356,333 @@ def collect_market_data(
             credit_ratio = {
                 "status": "ok",
                 "cacheStatus": credit_cache_status or "disabled",
+                "provider": credit_provider,
+                "valueBasis": credit_value_basis,
+                "formula": plan["creditRatio"]["formulas"][credit_value_basis],
                 "observationDate": common_dates[-1].isoformat(),
                 "unit": "ratio",
                 "level": ratios[-1],
                 "change5SessionsPct": (ratios[-1] / ratios[-6] - 1) * 100,
-                "componentCloses": {
+                "componentValues": {
                     "HYG": ratio_history["HYG"][common_dates[-1]],
                     "LQD": ratio_history["LQD"][common_dates[-1]],
                 },
                 "sources": ratio_sources,
+                "attempts": credit_attempts,
             }
+            if credit_value_basis == "Close":
+                credit_ratio["componentCloses"] = dict(credit_ratio["componentValues"])
+
+    breadth_history: dict[str, dict[date, float]] = {}
+    breadth_sources: dict[str, dict] = {}
+    breadth_attempts: list[dict] = []
+    breadth_provider: str | None = None
+    breadth_value_basis: str | None = None
+    breadth_source_urls: dict[str, str] = {}
+    breadth_cache_status: str | None = None
+
+    def record_breadth_failure(
+        stage_id: str, provider: str, failed_attempts: list[dict]
+    ) -> None:
+        fetched_at = max((item["fetchedAt"] for item in failed_attempts), default=started_at)
+        reasons = [
+            str(item["error"]).strip() or f"{provider} request failed"
+            for item in failed_attempts
+            if item.get("error") is not None
+        ]
+        entry = {
+            "sourceId": stage_id,
+            "status": "failed",
+            "provider": provider,
+            "fetchedAt": fetched_at,
+            "reason": "; ".join(dict.fromkeys(reasons)) or f"{provider} pair is incomplete",
+            "rateLimited": any(bool(item.get("rateLimited")) for item in failed_attempts),
+        }
+        breadth_attempts.append(entry)
+        gaps.append(entry.copy())
+
+    def apply_breadth_pair(
+        *,
+        stage_id: str,
+        provider: str,
+        value_basis: str,
+        source_urls: dict[str, str],
+        pair_attempts: dict[str, dict],
+        parser: Callable[[object, datetime, str], dict[date, float]],
+        key_prefix: str,
+    ) -> bool:
+        nonlocal breadth_history, breadth_sources, breadth_provider
+        nonlocal breadth_value_basis, breadth_source_urls, breadth_cache_status
+        histories: dict[str, dict[date, float]] = {}
+        sources: dict[str, dict] = {}
+        normalized_attempts: list[dict] = []
+        for symbol in BREADTH_SYMBOLS:
+            attempt = pair_attempts[f"{key_prefix}:{symbol}"]
+            normalized_attempts.append(attempt)
+            try:
+                if attempt["error"] is not None:
+                    raise ValueError(
+                        str(attempt["error"]).strip() or f"{provider} request failed"
+                    )
+                history = parser(attempt["payload"], cutoff, symbol)
+                histories[symbol] = history
+                observed_date = max(history)
+                sources[symbol] = {
+                    "sourceId": symbol,
+                    "status": "ok",
+                    "sourceUrl": source_urls[symbol],
+                    "provider": provider,
+                    "valueBasis": value_basis,
+                    "fetchedAt": attempt["fetchedAt"],
+                    "observationDate": observed_date.isoformat(),
+                    "value": history[observed_date],
+                }
+            except (KeyError, IndexError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                normalized_attempts[-1] = {
+                    **attempt,
+                    "error": exc,
+                    "errorType": exc.__class__.__name__,
+                }
+        if len(histories) != len(BREADTH_SYMBOLS):
+            record_breadth_failure(stage_id, provider, normalized_attempts)
+            return False
+        common_dates = sorted(set(histories["RSP"]) & set(histories["SPY"]))
+        if len(common_dates) < BREADTH_MINIMUM_COMMON_SESSIONS:
+            reason = ValueError(
+                f"{provider} RSP/SPY requires at least "
+                f"{BREADTH_MINIMUM_COMMON_SESSIONS} common sessions"
+            )
+            normalized_attempts[0] = {
+                **normalized_attempts[0],
+                "error": reason,
+                "errorType": "ValueError",
+            }
+            record_breadth_failure(stage_id, provider, normalized_attempts)
+            return False
+        breadth_history = histories
+        breadth_sources = sources
+        breadth_provider = provider
+        breadth_value_basis = value_basis
+        breadth_source_urls = dict(source_urls)
+        breadth_cache_status = "refreshed"
+        fetched_at = max(source["fetchedAt"] for source in sources.values())
+        breadth_attempts.append(
+            {
+                "sourceId": stage_id,
+                "status": "ok",
+                "provider": provider,
+                "fetchedAt": fetched_at,
+                "valueBasis": value_basis,
+            }
+        )
+        _write_breadth_cache(
+            resolved_cache_path,
+            breadth_history,
+            fetched_at,
+            provider=provider,
+            value_basis=value_basis,
+            source_urls=breadth_source_urls,
+        )
+        return True
+
+    breadth_nasdaq_ok = apply_breadth_pair(
+        stage_id="NASDAQ_RSP_SPY",
+        provider="Nasdaq",
+        value_basis="Close",
+        source_urls=plan["equityBreadth"]["nasdaqHistoryUrls"],
+        pair_attempts=attempts,
+        parser=_parse_nasdaq_history,
+        key_prefix="breadth-nasdaq",
+    )
+
+    breadth_sp_ok = False
+    if not breadth_nasdaq_ok:
+        if batch_fetch is None:
+            unavailable = {
+                "payload": None,
+                "fetchedAt": _clock_iso(clock),
+                "error": ValueError("S&P Global byte fetcher is unavailable"),
+                "errorType": "ValueError",
+                "rateLimited": False,
+            }
+            sp_attempts = {
+                f"breadth-sp:{symbol}": unavailable for symbol in BREADTH_SYMBOLS
+            }
+        else:
+            sp_specs = [
+                (
+                    f"breadth-sp:{symbol}",
+                    plan["equityBreadth"]["spGlobalHistoryUrls"][symbol],
+                )
+                for symbol in BREADTH_SYMBOLS
+            ]
+            sp_attempts: dict[str, dict] = {}
+            with ThreadPoolExecutor(max_workers=len(sp_specs)) as executor:
+                futures = [
+                    (key, executor.submit(attempt_fetch, batch_fetch, url))
+                    for key, url in sp_specs
+                ]
+                for key, future in futures:
+                    sp_attempts[key] = future.result()
+        breadth_sp_ok = apply_breadth_pair(
+            stage_id="SP_GLOBAL_RSP_SPY",
+            provider="S&P Dow Jones Indices",
+            value_basis="Price Return Index",
+            source_urls=plan["equityBreadth"]["spGlobalHistoryUrls"],
+            pair_attempts=sp_attempts,
+            parser=_parse_sp_global_history,
+            key_prefix="breadth-sp",
+        )
+
+    breadth_yahoo_ok = False
+    if not breadth_nasdaq_ok and not breadth_sp_ok:
+        if active_breadth_finance_history is not None:
+            yf_attempt = attempt_fetch(
+                lambda _url, active_timeout: active_breadth_finance_history(active_timeout),
+                "yfinance://RSP,SPY",
+            )
+            if yf_attempt["error"] is None:
+                try:
+                    histories = _normalize_pair_histories(
+                        yf_attempt["payload"], cutoff, BREADTH_SYMBOLS, "RSP/SPY"
+                    )
+                    yf_attempts = {
+                        f"breadth-yfinance:{symbol}": {
+                            **yf_attempt,
+                            "payload": histories[symbol],
+                        }
+                        for symbol in BREADTH_SYMBOLS
+                    }
+                    breadth_yahoo_ok = apply_breadth_pair(
+                        stage_id="YAHOO_RSP_SPY",
+                        provider="Yahoo Finance via yfinance",
+                        value_basis="Close",
+                        source_urls=plan["equityBreadth"]["yahooHistoryUrls"],
+                        pair_attempts=yf_attempts,
+                        parser=lambda payload, _cutoff, _symbol: payload,
+                        key_prefix="breadth-yfinance",
+                    )
+                except (KeyError, OSError, TypeError, ValueError) as exc:
+                    yf_attempt = {
+                        **yf_attempt,
+                        "error": exc,
+                        "errorType": exc.__class__.__name__,
+                    }
+            if not breadth_yahoo_ok:
+                record_breadth_failure(
+                    "YAHOO_RSP_SPY", "Yahoo Finance via yfinance", [yf_attempt]
+                )
+        if not breadth_yahoo_ok:
+            yahoo_specs = [
+                (
+                    f"breadth-yahoo:{symbol}",
+                    plan["equityBreadth"]["yahooHistoryUrls"][symbol],
+                )
+                for symbol in BREADTH_SYMBOLS
+            ]
+            yahoo_attempts: dict[str, dict] = {}
+            with ThreadPoolExecutor(max_workers=len(yahoo_specs)) as executor:
+                futures = [
+                    (key, executor.submit(attempt_fetch, fetch_text, url))
+                    for key, url in yahoo_specs
+                ]
+                for key, future in futures:
+                    yahoo_attempts[key] = future.result()
+            breadth_yahoo_ok = apply_breadth_pair(
+                stage_id="YAHOO_RSP_SPY",
+                provider="Yahoo Finance direct",
+                value_basis="Close",
+                source_urls=plan["equityBreadth"]["yahooHistoryUrls"],
+                pair_attempts=yahoo_attempts,
+                parser=_parse_yahoo_history,
+                key_prefix="breadth-yahoo",
+            )
+
+    if (
+        not breadth_nasdaq_ok
+        and not breadth_sp_ok
+        and not breadth_yahoo_ok
+        and cached_breadth is not None
+    ):
+        breadth_history = cached_breadth["histories"]
+        breadth_provider = cached_breadth["provider"]
+        breadth_value_basis = cached_breadth["valueBasis"]
+        breadth_source_urls = cached_breadth["sourceUrls"]
+        breadth_cache_status = (
+            "fresh-fallback"
+            if cached_breadth["ageSeconds"] <= CREDIT_CACHE_REFRESH_SECONDS
+            else "stale-fallback"
+        )
+        for symbol, history in breadth_history.items():
+            observed_date = max(history)
+            breadth_sources[symbol] = {
+                "sourceId": symbol,
+                "status": "ok",
+                "sourceUrl": breadth_source_urls[symbol],
+                "provider": breadth_provider,
+                "valueBasis": breadth_value_basis,
+                "fetchedAt": cached_breadth["savedAt"],
+                "cacheReadAt": started_at,
+                "cacheStatus": breadth_cache_status,
+                "observationDate": observed_date.isoformat(),
+                "value": history[observed_date],
+            }
+        breadth_attempts.append(
+            {
+                "sourceId": "CACHE_RSP_SPY",
+                "status": "ok",
+                "provider": breadth_provider,
+                "fetchedAt": cached_breadth["savedAt"],
+                "valueBasis": breadth_value_basis,
+                "cacheStatus": breadth_cache_status,
+            }
+        )
+
+    if not all(symbol in breadth_history for symbol in BREADTH_SYMBOLS):
+        equity_breadth = {
+            "status": "failed",
+            "missingComponents": [
+                symbol for symbol in BREADTH_SYMBOLS if symbol not in breadth_history
+            ],
+            "sources": breadth_sources,
+            "attempts": breadth_attempts,
+        }
+    else:
+        common_dates = sorted(
+            set(breadth_history["RSP"]) & set(breadth_history["SPY"])
+        )
+        ratios = [
+            breadth_history["RSP"][day] / breadth_history["SPY"][day]
+            for day in common_dates
+        ]
+        changes = {
+            f"{window}-session": (ratios[-1] / ratios[-window - 1] - 1) * 100
+            for window in (1, 5, 20)
+        }
+        change5 = changes["5-session"]
+        direction = "flat"
+        if change5 > 1e-12:
+            direction = "expanding"
+        elif change5 < -1e-12:
+            direction = "contracting"
+        equity_breadth = {
+            "status": "ok",
+            "cacheStatus": breadth_cache_status or "disabled",
+            "provider": breadth_provider,
+            "valueBasis": breadth_value_basis,
+            "formula": plan["equityBreadth"]["formulas"][breadth_value_basis],
+            "observationDate": common_dates[-1].isoformat(),
+            "unit": "ratio",
+            "level": ratios[-1],
+            "changesPct": changes,
+            "direction5Sessions": direction,
+            "componentValues": {
+                symbol: breadth_history[symbol][common_dates[-1]]
+                for symbol in BREADTH_SYMBOLS
+            },
+            "sources": breadth_sources,
+            "attempts": breadth_attempts,
+        }
 
     missing_liquidity = [
         source_id
@@ -934,6 +1777,7 @@ def collect_market_data(
         "collectionEndedAt": _clock_iso(clock),
         "fred": fred_results,
         "creditRatio": credit_ratio,
+        "equityBreadth": equity_breadth,
         "netLiquidity": net_liquidity,
         "binance": binance_results,
         "dataQuality": {"gaps": gaps},

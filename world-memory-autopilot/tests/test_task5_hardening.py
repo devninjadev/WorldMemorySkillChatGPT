@@ -441,7 +441,19 @@ def run_audit(*pages: dict) -> dict:
     }
 
 
-def precommit_bundle(*pages: dict) -> dict:
+def precommit_bundle(*pages: dict, include_default_report: bool = True) -> dict:
+    prepared_pages = list(pages)
+    has_feed = any("Batch Key" in page for page in prepared_pages)
+    has_memory = any("Revision Key" in page for page in prepared_pages)
+    has_report = any("Report Key" in page for page in prepared_pages)
+    if include_default_report and has_feed and not has_report:
+        default_report, _expected = (
+            report_page() if has_memory else hourly_report_page()
+        )
+        if not has_memory:
+            default_report["Material Change"] = False
+        prepared_pages.append(default_report)
+
     children = {"feed": [], "memory": [], "report": []}
     child_ids = {"feed": {}, "memory": {}, "report": {}}
     child_pages = {"feed": {}, "memory": {}, "report": {}}
@@ -450,7 +462,7 @@ def precommit_bundle(*pages: dict) -> dict:
         "memory": "Revision Key",
         "report": "Report Key",
     }
-    for page in pages:
+    for page in prepared_pages:
         kind = (
             "feed" if "Batch Key" in page
             else "memory" if "Revision Key" in page
@@ -478,7 +490,9 @@ def precommit_bundle(*pages: dict) -> dict:
             "Feed Success Count": success_count,
             "Feed Failure Count": failure_count,
             "New Item Count": new_count,
-            "Material Change": bool(visible_reports),
+            "Material Change": any(
+                page.get("Material Change") is True for page in visible_reports
+            ),
             "Integration Due": bool(six_hour_reports),
             "Integration Performed": bool(six_hour_reports),
             "Notification Plan": (
@@ -486,7 +500,7 @@ def precommit_bundle(*pages: dict) -> dict:
                 else "hourly-briefing" if visible_reports
                 else "silent"
             ),
-            "body": storage.encode_notion_body(run_audit(*pages)),
+            "body": storage.encode_notion_body(run_audit(*prepared_pages)),
         }
     )
     return {
@@ -2914,6 +2928,61 @@ class AuditMemoryAndReportTests(unittest.TestCase):
                 )
                 self.assertTrue(any(field in error for error in errors), errors)
 
+    def test_scheduled_nonmaterial_run_still_accepts_one_visible_hourly_report(self):
+        hourly, expected_hourly = hourly_report_page()
+        hourly["Material Change"] = False
+        expected_hourly["Material Change"] = False
+        scheduled_parent = parent_run(
+            **{
+                "Integration Key": "",
+                "Integration Due": False,
+                "Integration Performed": False,
+                "Material Change": False,
+                "Notification Plan": "hourly-briefing",
+            }
+        )
+
+        self.assertEqual(
+            storage.validate_child_page(
+                "report",
+                hourly,
+                expected_hourly,
+                scheduled_parent,
+                installation(),
+            ),
+            [],
+        )
+
+        feed, _expected_feed = feed_page()
+        bundle = precommit_bundle(feed, hourly)
+        for run in (
+            bundle["expected_run_snapshot"],
+            bundle["slot_rows"][0],
+            bundle["exact_run_rows"][0],
+        ):
+            run["Material Change"] = False
+        self.assertEqual(storage.verify_precommit_snapshot(**bundle), [])
+
+    def test_nonintegration_run_rejects_memory_and_suggestion_completion(self):
+        feed, _expected_feed = feed_page()
+        memory, _expected_memory = memory_page()
+        hourly, _expected_hourly = hourly_report_page()
+        bundle = precommit_bundle(feed, memory, hourly)
+
+        errors = storage.verify_precommit_snapshot(
+            **bundle,
+            authoritative_completed_memory_ids=[memory["page_id"]],
+        )
+
+        self.assertTrue(
+            any("non-integration precommit must not contain Memory" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("non-integration precommit must not complete suggestions" in error for error in errors),
+            errors,
+        )
+
         hourly, expected_hourly = hourly_report_page()
         hourly_parent = parent_run(
             **{
@@ -2937,7 +3006,6 @@ class AuditMemoryAndReportTests(unittest.TestCase):
         for field, value in (
             ("Integration Due", True),
             ("Integration Performed", True),
-            ("Material Change", False),
             ("Notification Plan", "silent"),
         ):
             with self.subTest(report_type="hourly-briefing", field=field):
@@ -3088,15 +3156,15 @@ class PrecommitIntegrityTests(unittest.TestCase):
         six_hour, _expected = report_page()
 
         for name, bundle in (
-            ("silent", precommit_bundle(feed)),
-            ("hourly", precommit_bundle(feed, hourly)),
+            ("scheduled-nonmaterial-hourly", precommit_bundle(feed)),
+            ("scheduled-material-hourly", precommit_bundle(feed, hourly)),
             ("six-hour", precommit_bundle(feed, six_hour)),
         ):
             with self.subTest(valid=name):
                 self.assertEqual(storage.verify_precommit_snapshot(**bundle), [])
 
         invalid_bundles = []
-        phantom_hourly = precommit_bundle(feed)
+        phantom_hourly = precommit_bundle(feed, include_default_report=False)
         for run in (
             phantom_hourly["expected_run_snapshot"],
             phantom_hourly["slot_rows"][0],
@@ -3348,7 +3416,9 @@ class PrecommitIntegrityTests(unittest.TestCase):
                     }
                 )
                 direct_feed, _expected = feed_page(direct_payload)
-                direct_bundle = precommit_bundle(direct_feed)
+                direct_bundle = precommit_bundle(
+                    direct_feed, include_default_report=False
+                )
                 direct_audit = run_audit(direct_feed)
                 direct_audit["trigger"] = direct_trigger
                 direct_body = storage.encode_notion_body(direct_audit)
