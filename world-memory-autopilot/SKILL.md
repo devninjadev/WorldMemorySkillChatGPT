@@ -2,7 +2,7 @@
 name: world-memory-autopilot
 description: Use when handling 월드메모리 or world memory requests, hourly feed monitoring, manual feed refreshes, forced six-hour reports, Notion ledger setup, or autopilot state updates.
 metadata:
-  version: "0.9.6"
+  version: "0.9.7"
 ---
 
 # World Memory Autopilot

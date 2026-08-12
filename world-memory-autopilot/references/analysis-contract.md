@@ -170,30 +170,36 @@ Do not assign unsupported probabilities. Keep `signalRadar` and `highlights` to 
 
 ## Korean output contracts
 
-Render a direct material hourly briefing outside the scheduled automation in Korean with these sections, in order:
+Keep the storage and presentation layers separate. 저장용 Report v2와 Notion 스키마는 변경하지 않는다. Transform that canonical payload, verified feeds, and prior committed Memory into a softer, beginner-friendly Korean rendering. Do not add, remove, rename, or reinterpret canonical Report-v2 fields merely to produce the new layout.
 
-1. `한 줄 판단`
-2. `새로운 중요 발전` — at most five
-3. `왜 중요한가·미국/한국 영향`
-4. optional `교차자산 반응` — only for a material change, direct reaction, confirmation, or invalidation
-5. `영향 자산·티커`
-6. `확인·무효화 조건`
-7. `다음 확인 지점`
-8. `출처`
+Use this visible structure for every successful scheduled Report, every six-hour Report, and every direct material hourly briefing, in this order:
 
-Render every successful scheduled Report and every six-hour Report in Korean with these sections, in order:
+1. `# (관련 이모지) 제목`
+2. `## Key Takeaway`
+3. `## 시장 현황`
+4. `## 중장기 맥락`
+5. `## 주요 지표들`
+6. `## 지켜봐야 할 것들`
+7. `## 관심을 가져볼 만한 이슈들`
+8. `## 출처·데이터 안내`
 
-1. `한 줄 판단`
-2. `현재 해석`
-3. `직전 대비 변화`
-4. `신호 레이더`
-5. `핵심 발전`
-6. `기업·산업 발전` — when at least one qualified company or industry event exists
-7. `기준·낙관·비관 시나리오`
-8. `월드 메모리 변경 제안`
-9. `포트폴리오·관찰 제안`
-10. `다음 확인 지점`
-11. `출처와 데이터 공백`
+Choose one relevant emoji for the title and make the title state the period's central tension or conclusion, not merely the report type or timestamp. Keep the section order stable for scanability, but vary length and emphasis with the evidence. Do not mechanically fill every section with equal volume.
+
+Write `Key Takeaway` as two to five concise bullets. Lead with the judgment, then the reason and the implication. State whether the overall setup is 좋은지, 나쁜지, 또는 엇갈리는지, while distinguishing market direction from risk and confidence. Never imply certainty beyond the evidence.
+
+Write `시장 현황` as one or two connected paragraphs for a 초보 독자. Explain what happened, why it matters now, whether the immediate environment is favorable, adverse, or mixed, and the clearest US/KR transmission path. Introduce unavoidable jargon in plain Korean on first use. Lead with consequences rather than source counts or raw headlines.
+
+Write `중장기 맥락` by connecting the current evidence to prior current committed Memory and the previous visible Report: what has strengthened, weakened, persisted, or changed direction. When no reliable prior context exists, say so plainly instead of inventing a trend. Scenarios and Memory-change suggestions may inform this explanation, but do not expose internal mutation mechanics.
+
+In `주요 지표들`, 관측한 지표를 전부 나열하지 않는다. Select only 현재 판단을 바꾸거나 확인하는 지표, important confirmation or invalidation signals, and values needed to understand a highlighted event. For each selected indicator, give the value or direction, actual observation time or date, and one plain-language sentence explaining why it matters. Keep unchanged background metrics out of the main prose; retain them in the canonical payload and use the compact source/data note when provenance or staleness matters. A complete scheduled cross-asset snapshot remains required in Report v2, but completeness of storage does not require a full visible metric dump.
+
+Use `지켜봐야 할 것들` for the next scheduled event, observable activation or invalidation condition, and the specific market or policy response that would change the judgment. Express portfolio implications as conditional observation, confirmation, sizing, or hedge considerations, never as unsupported buy/sell commands.
+
+Use `관심을 가져볼 만한 이슈들` for verified lower-priority developments that are not yet central but could become important in World Memory. Prefer concrete company, industry, policy, technology, or geopolitical developments with a credible transmission path. Do not pad this section; when none qualifies, say that there is no separate candidate issue at present.
+
+Use `출처·데이터 안내` as a compact evidence footer. Link the most decision-relevant primary or authoritative sources, disclose material lags, actual observation dates, fallbacks, and unresolved gaps, and distinguish unavailable data from neutral evidence. Do not repeat the full bibliography when several sources support the same point.
+
+A direct material hourly briefing outside the scheduled automation uses the same reader-facing structure but may be shorter and may omit unrelated cross-asset detail. A scheduled hourly or six-hour rendering remains full-size in analytical coverage even though its visible metric selection is concise. In every mode, use short paragraphs, descriptive bullets, and ordinary Korean; avoid unexplained scores, formulas, storage terms, and ledger language.
 
 Do not expose internal IDs, commands, or connector mechanics in the user rendering. Write `Notification Plan` before commit, then return the prepared rendering only after committed-Run confirmation and cache reconciliation attempt. Do not claim that delivery was observed.
 
