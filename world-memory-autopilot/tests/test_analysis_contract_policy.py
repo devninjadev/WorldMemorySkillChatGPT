@@ -55,6 +55,12 @@ class MarketDataDocumentationTests(unittest.TestCase):
         self.assertIn("`SPYUSDT`, USDⓈ-M perpetual", self.text)
         self.assertIn("rolling 24-hour", self.text)
 
+    def test_treasury_curve_uses_official_csv_then_xml(self):
+        self.assertIn("U.S. Treasury yield curve", self.text)
+        self.assertIn("official annual CSV → official `yield.xml`", self.text)
+        self.assertIn("2s10s", self.text)
+        self.assertIn("1- and 5-session", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

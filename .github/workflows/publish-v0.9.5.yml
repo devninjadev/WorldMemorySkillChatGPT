@@ -1,0 +1,33 @@
+name: Publish v0.9.5
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and verify release archive
+        run: |
+          zip -r world-memory-autopilot-v0.9.5.zip world-memory-autopilot \
+            -x '*/__pycache__/*' '*.py[cod]' '*/.pytest_cache/*' '*/.world-memory-runtime/*' '*/tmp*/*'
+          sha256sum world-memory-autopilot-v0.9.5.zip > world-memory-autopilot-v0.9.5.zip.sha256
+          unzip -t world-memory-autopilot-v0.9.5.zip
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.9.5 \
+            world-memory-autopilot-v0.9.5.zip \
+            world-memory-autopilot-v0.9.5.zip.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "World Memory Autopilot v0.9.5" \
+            --notes "Adds keyless U.S. Treasury daily par yield-curve collection from the official annual CSV with the official yield.xml feed as fallback. The collector preserves all published maturities, computes 1- and 5-session basis-point changes plus 2s10s, 5s30s, and 3m10y curve spreads, enforces cutoff dates, and isolates Treasury failures from other market inputs. Requires the Notion ChatGPT plugin, Python 3.10+, and outbound HTTPS."

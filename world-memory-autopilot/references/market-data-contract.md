@@ -4,6 +4,7 @@
 
 - Acquisition boundary
 - FRED series
+- U.S. Treasury yield curve
 - HYG/LQD
 - U.S. equity direction and market breadth
 - U.S. net liquidity
@@ -20,13 +21,13 @@ PYTHONPATH=<skill-path>/scripts python3 -m world_memory market-data-plan --now U
 PYTHONPATH=<skill-path>/scripts python3 -m world_memory collect-market-data --now UTC [--timeout SEC]
 ```
 
-The plan contains request paths and extraction contracts, not observed values. The collector performs the actual keyless public requests, parses each response independently, records the pass start/end and each source's `fetchedAt`/observation time, computes NFCIRISK changes, HYG/LQD, RSP/SPY breadth, and U.S. net liquidity, and preserves every success when another source fails. Treat the collector JSON as the acquisition boundary; do not manually downgrade a successful member to a gap or skip a configured member because another failed. A registry, policy, or schema stop that occurs before analysis still blocks these external calls. A silent non-due Run with no event requiring market-reaction evidence need not fetch or store a market snapshot.
+The plan contains request paths and extraction contracts, not observed values. The collector performs the actual keyless public requests, parses each response independently, records the pass start/end and each source's `fetchedAt`/observation time, computes NFCIRISK changes, the U.S. Treasury yield curve, HYG/LQD, RSP/SPY breadth, and U.S. net liquidity, and preserves every success when another source fails. Treat the collector JSON as the acquisition boundary; do not manually downgrade a successful member to a gap or skip a configured member because another failed. A registry, policy, or schema stop that occurs before analysis still blocks these external calls. A silent non-due Run with no event requiring market-reaction evidence need not fetch or store a market snapshot.
 
-The collector starts the FRED batch, both Nasdaq HYG/LQD histories, both Nasdaq RSP/SPY histories, and all five Binance tickers in one parallel bounded pass. Within either paired-ratio member, request both symbols concurrently at each source tier and advance only when the complete pair is unusable. The timeout is the per-member network ceiling; later tiers add bounded sequential fallback time, while first-use Yahoo dependency bootstrap may add installation time. A lagged but valid FRED observation remains usable with its actual date and a lag warning. For net liquidity, use only `netLiquidity.status:"ok"`; when a required component fails, preserve every other successful FRED member and identify only the missing component. Never replace a collector failure with an unattempted or model-invented value.
+The collector starts the FRED batch, the official Treasury annual CSV, both Nasdaq HYG/LQD histories, both Nasdaq RSP/SPY histories, and all five Binance tickers in one parallel bounded pass. Within either paired-ratio member, request both symbols concurrently at each source tier and advance only when the complete pair is unusable. The timeout is the per-member network ceiling; later tiers add bounded sequential fallback time, while first-use Yahoo dependency bootstrap may add installation time. A lagged but valid FRED or Treasury observation remains usable with its actual date and a lag warning. For net liquidity, use only `netLiquidity.status:"ok"`; when a required component fails, preserve every other successful FRED member and identify only the missing component. Never replace a collector failure with an unattempted or model-invented value.
 
 Distinguish a source failure from an execution-path denial. When a collector member failed because the local shell or sandbox denied outbound network access, that result proves only that path failed. Before creating a source gap, use an available web-research or browser fetch capability on the same exact public URL. For FRED, the official series pages listed below are the mandatory fallback and expose the latest dated observations even when raw CSV download is blocked. Preserve every visible valid observation and compute every supported window; if only the long history is unavailable, record that window as partial rather than calling the whole source missing. Declare the source failed only after both the packaged request and this exact official fallback fail. Do not use a third-party value while an official page is available.
 
-Do not write API keys or credentials. The FRED graph CSV and the five Binance ticker routes are public. Treat finance-history/Yahoo data as market-price evidence, not Federal Reserve evidence.
+Do not write API keys or credentials. The FRED graph CSV, Treasury CSV/XML, and the five Binance ticker routes are public. Treat finance-history/Yahoo data as market-price evidence, not Federal Reserve evidence.
 
 ## FRED series
 
@@ -51,6 +52,14 @@ The series pages are the metadata authority for frequency, units, and release la
 - `https://fred.stlouisfed.org/series/WDTGAL`
 - `https://fred.stlouisfed.org/series/RRPONTSYD`
 - `https://fred.stlouisfed.org/series/DTWEXBGS`
+
+## U.S. Treasury yield curve
+
+Acquire the U.S. Treasury yield curve without credentials through exactly this order: official annual CSV → official `yield.xml`. Generate the annual CSV URL from the collection-cutoff year and the Treasury `TextView` page's own CSV link. Use the year-filtered `TextView?type=daily_treasury_yield_curve&field_tdr_date_value=YYYY` page as the human-readable authority and evidence link. The static XML is the official fallback exposed by Treasury's Interest Rate XML Files page; do not substitute FRED or a market-data vendor while either Treasury route works.
+
+Parse `Date` plus the currently published constant maturities: 1, 1.5, 2, 3, 4, and 6 months and 1, 2, 3, 5, 7, 10, 20, and 30 years. Use only finite numeric yields and rows on or before the collection cutoff; do not reject a valid negative yield. Require 2Y, 5Y, 10Y, and 30Y on a retained row. A later-dated row is not eligible merely because it arrived during collection. Store the latest complete row under `treasuryYieldCurve` with provider `U.S. Department of the Treasury`, unit `percent`, value basis `Daily Treasury Par Yield Curve Rate`, actual observation date, fetched time, source URL, and every source attempt actually performed.
+
+For every available maturity compute 1- and 5-session changes in basis points. Compute curve spreads in basis points as `2s10s = 10Y - 2Y`, `5s30s = 30Y - 5Y`, and `3m10y = 10Y - 3M`, plus their 1- and 5-session changes. Do not call these transaction yields: Treasury states that the par yields are interpolated from indicative bid-side quotations near the market close. A failed CSV attempt remains visible in `attempts` and `dataQuality.gaps` when XML succeeds; a total Treasury failure does not erase FRED, credit, breadth, liquidity, or Binance observations.
 
 ## HYG/LQD
 
@@ -118,6 +127,7 @@ Treat the plan's FRED/ETF `freshnessWarningCalendarDays` as warning thresholds, 
 Preserve successful observations when another source fails. Record each failed source, attempt time, and reason in `dataQuality.gaps`; do not turn an unattempted source into a neutral signal. Apply these dependency rules:
 
 - missing `NFCIRISK` does not erase a valid `HYG/LQD`, and vice versa;
+- a failed Treasury CSV advances once to the official XML, and a total Treasury failure does not erase other market observations;
 - one missing net-liquidity component suppresses the entire derived level and all changes;
 - a failed Binance ticker does not suppress any other ticker;
 - a failed `RSP/SPY` pair does not erase valid `QQQUSDT` or `SPYUSDT` live observations, and live perpetuals never replace the close-based breadth ratio;
@@ -127,6 +137,6 @@ Preserve successful observations when another source fails. Record each failed s
 
 Whenever a value appears in a Report, include its direct source URL, observed date/time, fetched time, unit/denomination, market type, and change window in the canonical analysis evidence. Put formulas and proxy limitations in `methodology`; keep the Korean radar note to the plain-language interpretation required by the analysis contract.
 
-Project `QQQUSDT` and `SPYUSDT` into fast direction/repricing commentary only when their observations are current. Project `equityBreadth` as regular-session breadth with its observation date and 1-, 5-, and 20-session changes. Do not repeat unchanged live prices merely to fill an hourly narrative; emphasize a meaningful move, an event reaction, a confirmation/invalidation, or the breadth divergence that changes interpretation.
+Project `QQQUSDT` and `SPYUSDT` into fast direction/repricing commentary only when their observations are current. Project `equityBreadth` as regular-session breadth with its observation date and 1-, 5-, and 20-session changes. Project Treasury levels or curve spreads when their change, event reaction, or cross-asset confirmation changes the interpretation; retain the observation date and basis-point window. Do not repeat unchanged live prices or yields merely to fill an hourly narrative; emphasize a meaningful move, an event reaction, a confirmation/invalidation, or a breadth/curve divergence that changes interpretation.
 
 Only add a data gap after the required bounded attempt failed, returned malformed data, or exceeded the freshness rule. Distinguish `missing`, `lagged`, and `failed` from neutral evidence. Never claim that differently timed weekly, daily, and live observations are simultaneous; call them one collection-window snapshot and expose their individual timestamps.

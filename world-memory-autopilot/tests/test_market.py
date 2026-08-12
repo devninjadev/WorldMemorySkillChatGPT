@@ -41,6 +41,47 @@ def _fred_batch_zip() -> bytes:
     return payload.getvalue()
 
 
+def _treasury_csv() -> str:
+    return """Date,\"1 Mo\",\"1.5 Month\",\"2 Mo\",\"3 Mo\",\"4 Mo\",\"6 Mo\",\"1 Yr\",\"2 Yr\",\"3 Yr\",\"5 Yr\",\"7 Yr\",\"10 Yr\",\"20 Yr\",\"30 Yr\"
+01/15/2026,3.70,3.71,3.72,3.73,3.74,3.75,3.76,3.77,3.78,3.79,3.80,3.81,3.82,3.83
+01/14/2026,3.60,3.61,3.62,3.63,3.64,3.65,3.66,3.67,3.68,3.69,3.70,3.71,3.72,3.73
+01/13/2026,3.50,3.51,3.52,3.53,3.54,3.55,3.56,3.57,3.58,3.59,3.60,3.61,3.62,3.63
+01/12/2026,3.40,3.41,3.42,3.43,3.44,3.45,3.46,3.47,3.48,3.49,3.50,3.51,3.52,3.53
+01/09/2026,3.30,3.31,3.32,3.33,3.34,3.35,3.36,3.37,3.38,3.39,3.40,3.41,3.42,3.43
+01/08/2026,3.20,3.21,3.22,3.23,3.24,3.25,3.26,3.27,3.28,3.29,3.30,3.31,3.32,3.33
+01/07/2026,3.10,3.11,3.12,3.13,3.14,3.15,3.16,3.17,3.18,3.19,3.20,3.21,3.22,3.23
+"""
+
+
+def _treasury_xml() -> str:
+    rows = []
+    for index, day in enumerate((7, 8, 9, 12, 13, 14)):
+        base = 3.10 + (index * 0.10)
+        rows.append(
+            "<G_NEW_DATE>"
+            f"<BID_CURVE_DATE>{day:02d}-JAN-26</BID_CURVE_DATE>"
+            "<LIST_G_BC_CAT><G_BC_CAT>"
+            f"<BC_1MONTH>{base:.2f}</BC_1MONTH>"
+            f"<BC_1_5MONTH>{base + 0.01:.2f}</BC_1_5MONTH>"
+            f"<BC_2MONTH>{base + 0.02:.2f}</BC_2MONTH>"
+            f"<BC_3MONTH>{base + 0.03:.2f}</BC_3MONTH>"
+            f"<BC_4MONTH>{base + 0.04:.2f}</BC_4MONTH>"
+            f"<BC_6MONTH>{base + 0.05:.2f}</BC_6MONTH>"
+            f"<BC_1YEAR>{base + 0.06:.2f}</BC_1YEAR>"
+            f"<BC_2YEAR>{base + 0.07:.2f}</BC_2YEAR>"
+            f"<BC_3YEAR>{base + 0.08:.2f}</BC_3YEAR>"
+            f"<BC_5YEAR>{base + 0.09:.2f}</BC_5YEAR>"
+            f"<BC_7YEAR>{base + 0.10:.2f}</BC_7YEAR>"
+            f"<BC_10YEAR>{base + 0.11:.2f}</BC_10YEAR>"
+            f"<BC_20YEAR>{base + 0.12:.2f}</BC_20YEAR>"
+            f"<BC_30YEAR>{base + 0.13:.2f}</BC_30YEAR>"
+            "</G_BC_CAT></LIST_G_BC_CAT>"
+            f"<NEW_DATE>01-{day:02d}-2026</NEW_DATE>"
+            "</G_NEW_DATE>"
+        )
+    return "<QR_BC_CM><LIST_G_WEEK_OF_MONTH><G_WEEK_OF_MONTH><LIST_G_NEW_DATE>" + "".join(rows) + "</LIST_G_NEW_DATE></G_WEEK_OF_MONTH></LIST_G_WEEK_OF_MONTH></QR_BC_CM>"
+
+
 def _credit_histories() -> dict[str, dict[str, float]]:
     days = ["2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12", "2026-01-13", "2026-01-14"]
     return {
@@ -147,6 +188,84 @@ def _ishares_history(values: list[float]) -> bytes:
 
 
 class MarketCollectionTests(unittest.TestCase):
+    def test_treasury_csv_parser_uses_cutoff_and_preserves_full_curve(self) -> None:
+        history = market._parse_treasury_csv(
+            _treasury_csv(), datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(len(history), 6)
+        self.assertEqual(history[-1][0].isoformat(), "2026-01-14")
+        self.assertEqual(
+            set(history[-1][1]),
+            {
+                "1M", "1.5M", "2M", "3M", "4M", "6M", "1Y",
+                "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y",
+            },
+        )
+        self.assertEqual(history[-1][1]["10Y"], 3.71)
+
+    def test_treasury_parser_accepts_finite_negative_yields(self) -> None:
+        payload = _treasury_csv().replace(
+            "01/14/2026,3.60,", "01/14/2026,-0.10,"
+        )
+        history = market._parse_treasury_csv(
+            payload, datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(history[-1][1]["1M"], -0.10)
+
+    def test_treasury_csv_is_primary_and_computes_curve_changes(self) -> None:
+        def fetch_text(url: str, _: float) -> str:
+            if "daily-treasury-rates.csv" in url:
+                return _treasury_csv()
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        curve = result["treasuryYieldCurve"]
+        self.assertEqual(curve["status"], "ok")
+        self.assertEqual(curve["provider"], "U.S. Department of the Treasury")
+        self.assertEqual(curve["valueBasis"], "Daily Treasury Par Yield Curve Rate")
+        self.assertEqual(curve["observationDate"], "2026-01-14")
+        self.assertEqual(curve["yieldsPct"]["2Y"], 3.67)
+        self.assertAlmostEqual(curve["changesBp"]["10Y"]["1-session"], 10.0)
+        self.assertAlmostEqual(curve["changesBp"]["10Y"]["5-session"], 50.0)
+        self.assertAlmostEqual(curve["spreadsBp"]["2s10s"], 4.0)
+        self.assertEqual(curve["attempts"][0]["sourceId"], "TREASURY_YIELD_CSV")
+        self.assertEqual(curve["attempts"][0]["status"], "ok")
+
+    def test_treasury_xml_is_official_fallback_after_csv_failure(self) -> None:
+        requested: list[str] = []
+
+        def fetch_text(url: str, _: float) -> str:
+            requested.append(url)
+            if "daily-treasury-rates.csv" in url:
+                raise OSError("CSV blocked")
+            if url.endswith("/yield.xml"):
+                return _treasury_xml()
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-01-14T12:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 1, 14, 12, 0, 1, tzinfo=timezone.utc),
+        )
+
+        curve = result["treasuryYieldCurve"]
+        self.assertEqual(curve["status"], "ok")
+        self.assertTrue(curve["sourceUrl"].endswith("/yield.xml"))
+        self.assertEqual(
+            [attempt["status"] for attempt in curve["attempts"]], ["failed", "ok"]
+        )
+        self.assertTrue(any(url.endswith("/yield.xml") for url in requested))
+        self.assertIn(
+            "TREASURY_YIELD_CSV",
+            [gap["sourceId"] for gap in result["dataQuality"]["gaps"]],
+        )
     def test_sp_global_workbook_parser_extracts_price_return_history(self) -> None:
         import pandas as pd
 
@@ -860,6 +979,8 @@ class MarketCollectionTests(unittest.TestCase):
         self.assertEqual(
             [gap["sourceId"] for gap in result["dataQuality"]["gaps"]],
             [
+                "TREASURY_YIELD_CSV",
+                "TREASURY_YIELD_XML",
                 "NASDAQ_HYG_LQD",
                 "ISHARES_HYG_LQD",
                 "YAHOO_HYG_LQD",

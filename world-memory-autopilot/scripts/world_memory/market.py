@@ -15,6 +15,7 @@ import re
 from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
 from .scheduler import parse_utc, utc_iso
@@ -80,6 +81,38 @@ BREADTH_SYMBOLS = ("RSP", "SPY")
 BREADTH_MINIMUM_COMMON_SESSIONS = 21
 BREADTH_CACHE_MAX_OBSERVATION_DAYS = 7
 SP_GLOBAL_INDEX_IDS = {"RSP": "370", "SPY": "340"}
+TREASURY_TEXT_VIEW_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView"
+)
+TREASURY_CSV_BASE_URL = (
+    "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+    "daily-treasury-rates.csv"
+)
+TREASURY_XML_URL = (
+    "https://home.treasury.gov/sites/default/files/interest-rates/yield.xml"
+)
+TREASURY_MATURITIES = (
+    ("1M", "1 Mo", "BC_1MONTH"),
+    ("1.5M", "1.5 Month", "BC_1_5MONTH"),
+    ("2M", "2 Mo", "BC_2MONTH"),
+    ("3M", "3 Mo", "BC_3MONTH"),
+    ("4M", "4 Mo", "BC_4MONTH"),
+    ("6M", "6 Mo", "BC_6MONTH"),
+    ("1Y", "1 Yr", "BC_1YEAR"),
+    ("2Y", "2 Yr", "BC_2YEAR"),
+    ("3Y", "3 Yr", "BC_3YEAR"),
+    ("5Y", "5 Yr", "BC_5YEAR"),
+    ("7Y", "7 Yr", "BC_7YEAR"),
+    ("10Y", "10 Yr", "BC_10YEAR"),
+    ("20Y", "20 Yr", "BC_20YEAR"),
+    ("30Y", "30 Yr", "BC_30YEAR"),
+)
+TREASURY_REQUIRED_MATURITIES = frozenset(("2Y", "5Y", "10Y", "30Y"))
+TREASURY_SPREADS = {
+    "2s10s": ("10Y", "2Y"),
+    "5s30s": ("30Y", "5Y"),
+    "3m10y": ("10Y", "3M"),
+}
 
 
 def _url(base: str, parameters: list[tuple[str, str]]) -> str:
@@ -169,6 +202,10 @@ def market_data_plan(now: str) -> dict:
         for symbol in BREADTH_SYMBOLS
     }
     fields = ["lastPrice", "priceChangePercent", "closeTime", "quoteVolume", "count"]
+    treasury_parameters = [
+        ("type", "daily_treasury_yield_curve"),
+        ("field_tdr_date_value", str(planned.year)),
+    ]
     return {
         "schemaVersion": 1,
         "plannedAt": utc_iso(planned),
@@ -208,6 +245,27 @@ def market_data_plan(now: str) -> dict:
                 }
                 for series_id, role, frequency, unit, warning_days in FRED_SERIES
             ],
+        },
+        "treasuryYieldCurve": {
+            "provider": "U.S. Department of the Treasury",
+            "auth": "none",
+            "sourceOrder": ["treasury-csv", "treasury-xml"],
+            "pageUrl": _url(TREASURY_TEXT_VIEW_URL, treasury_parameters),
+            "csvUrl": _url(
+                f"{TREASURY_CSV_BASE_URL}/{planned.year}/all",
+                [*treasury_parameters, ("page", ""), ("_format", "csv")],
+            ),
+            "xmlUrl": TREASURY_XML_URL,
+            "maturities": [name for name, _, _ in TREASURY_MATURITIES],
+            "changeSessions": [1, 5],
+            "spreads": {
+                "2s10s": "10Y - 2Y",
+                "5s30s": "30Y - 5Y",
+                "3m10y": "10Y - 3M",
+            },
+            "unit": "percent",
+            "valueBasis": "Daily Treasury Par Yield Curve Rate",
+            "freshnessWarningCalendarDays": 5,
         },
         "creditRatio": {
             "provider": "priority-fallback",
@@ -363,6 +421,147 @@ def _parse_fred_csv(series_id: str, payload: str, cutoff: datetime) -> list[tupl
     if not observations:
         raise ValueError(f"{series_id} has no observation on or before cutoff")
     return sorted(observations.items())
+
+
+def _treasury_row_values(
+    raw_values: dict[str, object], field_names: dict[str, str]
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for maturity, field in field_names.items():
+        raw_value = raw_values.get(field)
+        if raw_value is None:
+            continue
+        text_value = str(raw_value).strip()
+        if not text_value:
+            continue
+        value = _finite_number(text_value, field=f"Treasury {maturity}")
+        values[maturity] = value
+    return values
+
+
+def _finalize_treasury_history(
+    observations: dict[date, dict[str, float]], cutoff: datetime
+) -> list[tuple[date, dict[str, float]]]:
+    eligible = {
+        observed_day: values
+        for observed_day, values in observations.items()
+        if observed_day <= cutoff.date()
+        and TREASURY_REQUIRED_MATURITIES.issubset(values)
+    }
+    if not eligible:
+        raise ValueError(
+            "Treasury yield curve has no complete observation on or before cutoff"
+        )
+    return sorted(eligible.items())
+
+
+def _parse_treasury_csv(
+    payload: str, cutoff: datetime
+) -> list[tuple[date, dict[str, float]]]:
+    reader = csv.DictReader(StringIO(payload))
+    if reader.fieldnames is None or "Date" not in reader.fieldnames:
+        raise ValueError("Treasury CSV missing Date")
+    required_fields = {csv_name for _, csv_name, _ in TREASURY_MATURITIES}
+    if not required_fields.issubset(reader.fieldnames):
+        raise ValueError("Treasury CSV missing maturity columns")
+
+    field_names = {name: csv_name for name, csv_name, _ in TREASURY_MATURITIES}
+    observations: dict[date, dict[str, float]] = {}
+    for row in reader:
+        raw_day = (row.get("Date") or "").strip()
+        if not raw_day:
+            continue
+        observed_day = datetime.strptime(raw_day, "%m/%d/%Y").date()
+        values = _treasury_row_values(row, field_names)
+        if observed_day in observations and observations[observed_day] != values:
+            raise ValueError(
+                f"Treasury CSV has conflicting observations for {observed_day}"
+            )
+        observations[observed_day] = values
+    return _finalize_treasury_history(observations, cutoff)
+
+
+def _parse_treasury_xml(
+    payload: str, cutoff: datetime
+) -> list[tuple[date, dict[str, float]]]:
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise ValueError("Treasury XML is malformed") from exc
+    field_names = {name: xml_name for name, _, xml_name in TREASURY_MATURITIES}
+    observations: dict[date, dict[str, float]] = {}
+    for row in root.findall(".//G_NEW_DATE"):
+        raw_day = (row.findtext("NEW_DATE") or "").strip()
+        if raw_day:
+            observed_day = datetime.strptime(raw_day, "%m-%d-%Y").date()
+        else:
+            bid_curve_day = (row.findtext("BID_CURVE_DATE") or "").strip()
+            if not bid_curve_day:
+                continue
+            observed_day = datetime.strptime(bid_curve_day, "%d-%b-%y").date()
+        raw_values = {
+            xml_name: row.findtext(f".//{xml_name}")
+            for xml_name in field_names.values()
+        }
+        values = _treasury_row_values(raw_values, field_names)
+        if observed_day in observations and observations[observed_day] != values:
+            raise ValueError(
+                f"Treasury XML has conflicting observations for {observed_day}"
+            )
+        observations[observed_day] = values
+    return _finalize_treasury_history(observations, cutoff)
+
+
+def _treasury_spreads(values: dict[str, float]) -> dict[str, float | None]:
+    return {
+        spread: round(
+            (values[long_maturity] - values[short_maturity]) * 100, 6
+        )
+        if long_maturity in values and short_maturity in values
+        else None
+        for spread, (long_maturity, short_maturity) in TREASURY_SPREADS.items()
+    }
+
+
+def _treasury_snapshot(
+    history: list[tuple[date, dict[str, float]]]
+) -> dict[str, object]:
+    observation_day, latest = history[-1]
+    changes: dict[str, dict[str, float | None]] = {}
+    for maturity, _, _ in TREASURY_MATURITIES:
+        changes[maturity] = {}
+        for window in (1, 5):
+            previous = history[-window - 1][1] if len(history) > window else {}
+            changes[maturity][f"{window}-session"] = (
+                round((latest[maturity] - previous[maturity]) * 100, 6)
+                if maturity in latest and maturity in previous
+                else None
+            )
+
+    latest_spreads = _treasury_spreads(latest)
+    spread_changes: dict[str, dict[str, float | None]] = {}
+    for spread in TREASURY_SPREADS:
+        spread_changes[spread] = {}
+        for window in (1, 5):
+            previous_spreads = (
+                _treasury_spreads(history[-window - 1][1])
+                if len(history) > window
+                else {}
+            )
+            previous = previous_spreads.get(spread)
+            current = latest_spreads.get(spread)
+            spread_changes[spread][f"{window}-session"] = (
+                round(current - previous, 6)
+                if current is not None and previous is not None
+                else None
+            )
+    return {
+        "observationDate": observation_day.isoformat(),
+        "yieldsPct": latest,
+        "changesBp": changes,
+        "spreadsBp": latest_spreads,
+        "spreadChangesBp": spread_changes,
+    }
 
 
 def _change_map(
@@ -953,6 +1152,9 @@ def collect_market_data(
         )
         for symbol in plan["equityBreadth"]["symbols"]
     )
+    request_specs.append(
+        ("treasury:csv", fetch_text, plan["treasuryYieldCurve"]["csvUrl"])
+    )
     request_specs.extend(
         (f"binance:{source['symbol']}", fetch_text, source["url"])
         for source in plan["binance"]
@@ -966,6 +1168,103 @@ def collect_market_data(
         ]
         for key, future in futures:
             attempts[key] = future.result()
+
+    treasury_attempts: list[dict] = []
+    treasury_history: list[tuple[date, dict[str, float]]] | None = None
+    treasury_source_url: str | None = None
+    treasury_fetched_at: str | None = None
+
+    def try_treasury_source(
+        *, source_id: str, url: str, attempt: dict, parser: Callable
+    ) -> bool:
+        nonlocal treasury_history, treasury_source_url, treasury_fetched_at
+        try:
+            if attempt["error"] is not None:
+                raise ValueError(
+                    str(attempt["error"]).strip() or f"{source_id} request failed"
+                )
+            history = parser(attempt["payload"], cutoff)
+            treasury_history = history
+            treasury_source_url = url
+            treasury_fetched_at = attempt["fetchedAt"]
+            treasury_attempts.append(
+                {
+                    "sourceId": source_id,
+                    "status": "ok",
+                    "sourceUrl": url,
+                    "fetchedAt": attempt["fetchedAt"],
+                }
+            )
+            return True
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            reason = str(exc).strip() or f"{source_id} failed"
+            public_attempt = {
+                "sourceId": source_id,
+                "status": "failed",
+                "sourceUrl": url,
+                "fetchedAt": attempt["fetchedAt"],
+                "reason": reason,
+            }
+            treasury_attempts.append(public_attempt)
+            gaps.append(public_attempt.copy())
+            return False
+
+    treasury_plan = plan["treasuryYieldCurve"]
+    treasury_ok = try_treasury_source(
+        source_id="TREASURY_YIELD_CSV",
+        url=treasury_plan["csvUrl"],
+        attempt=attempts["treasury:csv"],
+        parser=_parse_treasury_csv,
+    )
+    if not treasury_ok:
+        xml_attempt = attempt_fetch(fetch_text, treasury_plan["xmlUrl"])
+        treasury_ok = try_treasury_source(
+            source_id="TREASURY_YIELD_XML",
+            url=treasury_plan["xmlUrl"],
+            attempt=xml_attempt,
+            parser=_parse_treasury_xml,
+        )
+
+    if treasury_ok and treasury_history is not None:
+        snapshot = _treasury_snapshot(treasury_history)
+        observation_day = date.fromisoformat(str(snapshot["observationDate"]))
+        lag_days = (cutoff.date() - observation_day).days
+        freshness = (
+            "lagged"
+            if lag_days > treasury_plan["freshnessWarningCalendarDays"]
+            else "current"
+        )
+        treasury_yield_curve = {
+            "sourceId": "US_TREASURY_YIELD_CURVE",
+            "status": "ok",
+            "provider": treasury_plan["provider"],
+            "sourceUrl": treasury_source_url,
+            "pageUrl": treasury_plan["pageUrl"],
+            "fetchedAt": treasury_fetched_at,
+            "unit": treasury_plan["unit"],
+            "valueBasis": treasury_plan["valueBasis"],
+            **snapshot,
+            "lagCalendarDays": lag_days,
+            "freshness": freshness,
+            "attempts": treasury_attempts,
+        }
+        if freshness == "lagged":
+            gaps.append(
+                {
+                    "sourceId": "US_TREASURY_YIELD_CURVE",
+                    "status": "lagged",
+                    "fetchedAt": treasury_fetched_at,
+                    "reason": f"latest observation is {lag_days} calendar days old",
+                }
+            )
+    else:
+        treasury_yield_curve = {
+            "sourceId": "US_TREASURY_YIELD_CURVE",
+            "status": "failed",
+            "provider": treasury_plan["provider"],
+            "pageUrl": treasury_plan["pageUrl"],
+            "attempts": treasury_attempts,
+        }
 
     batch_error: Exception | None = None
     if batch_fetch is not None:
@@ -1776,6 +2075,7 @@ def collect_market_data(
         "collectionStartedAt": started_at,
         "collectionEndedAt": _clock_iso(clock),
         "fred": fred_results,
+        "treasuryYieldCurve": treasury_yield_curve,
         "creditRatio": credit_ratio,
         "equityBreadth": equity_breadth,
         "netLiquidity": net_liquidity,

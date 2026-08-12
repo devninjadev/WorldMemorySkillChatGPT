@@ -314,6 +314,30 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(plan["fred"]["csv"]["dateField"], "observation_date")
         self.assertEqual(plan["fred"]["csv"]["missingValues"], ["", "."])
 
+        treasury = plan["treasuryYieldCurve"]
+        self.assertEqual(
+            treasury["sourceOrder"], ["treasury-csv", "treasury-xml"]
+        )
+        self.assertIn(
+            "daily-treasury-rates.csv/2026/all", treasury["csvUrl"]
+        )
+        self.assertEqual(
+            treasury["xmlUrl"],
+            "https://home.treasury.gov/sites/default/files/interest-rates/yield.xml",
+        )
+        self.assertEqual(
+            treasury["maturities"],
+            [
+                "1M", "1.5M", "2M", "3M", "4M", "6M", "1Y",
+                "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y",
+            ],
+        )
+        self.assertEqual(treasury["changeSessions"], [1, 5])
+        self.assertEqual(
+            treasury["spreads"],
+            {"2s10s": "10Y - 2Y", "5s30s": "30Y - 5Y", "3m10y": "10Y - 3M"},
+        )
+
         ratio = plan["creditRatio"]
         self.assertEqual(ratio["symbols"], ["HYG", "LQD"])
         self.assertEqual(

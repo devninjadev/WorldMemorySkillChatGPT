@@ -13,7 +13,7 @@ World Memory setup and operational runs must stop if the Notion ChatGPT plugin i
 
 ## Install
 
-Download the `world-memory-autopilot-v0.9.4.zip` asset from the GitHub release and install or import it as a ChatGPT skill. The archive contains one top-level `world-memory-autopilot` folder.
+Download the `world-memory-autopilot-v0.9.5.zip` asset from the GitHub release and install or import it as a ChatGPT skill. The archive contains one top-level `world-memory-autopilot` folder.
 
 ## Repository layout
 
@@ -24,4 +24,4 @@ Download the `world-memory-autopilot-v0.9.4.zip` asset from the GitHub release a
 
 ## Version
 
-This repository snapshot is release `v0.9.4`.
+This repository snapshot is release `v0.9.5`.
