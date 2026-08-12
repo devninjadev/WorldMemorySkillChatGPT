@@ -4,6 +4,8 @@ from pathlib import Path
 
 CONTRACT = Path(__file__).parents[1] / "references" / "analysis-contract.md"
 MARKET_CONTRACT = Path(__file__).parents[1] / "references" / "market-data-contract.md"
+SOURCE_CONTRACT = Path(__file__).parents[1] / "references" / "source-contract.md"
+SKILL = Path(__file__).parents[1] / "SKILL.md"
 
 
 class AnalysisContractPolicyTests(unittest.TestCase):
@@ -60,6 +62,37 @@ class AnalysisContractPolicyTests(unittest.TestCase):
         self.assertIn("현재 판단을 바꾸거나 확인하는 지표", self.text)
         self.assertIn("저장용 Report v2", self.text)
         self.assertIn("변경하지 않는다", self.text)
+
+
+class SourceContractPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source_text = SOURCE_CONTRACT.read_text(encoding="utf-8")
+        cls.skill_text = SKILL.read_text(encoding="utf-8")
+
+    def test_rss_app_csv_is_the_only_configured_feed_format(self):
+        self.assertEqual(self.source_text.count("https://rss.app/feeds/"), 5)
+        self.assertEqual(self.source_text.count(".csv`"), 5)
+        self.assertNotIn("rss.app/feeds/5VaycMAa8SwPhOAP.xml", self.source_text)
+        self.assertIn("RSS.app CSV", self.source_text)
+
+    def test_rss_app_collection_requires_direct_http_without_web_fallback(self):
+        combined = self.source_text + "\n" + self.skill_text
+        for required in (
+            "packaged direct-HTTP path",
+            "generic web fetch",
+            "web search",
+            "browser navigation",
+            "must not be used as an RSS.app fallback",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, combined)
+
+    def test_csv_identity_and_exact_header_contract_are_explicit(self):
+        self.assertIn("Link`, else whitespace-collapsed `Title", self.source_text)
+        self.assertIn("raw `Date`", self.source_text)
+        self.assertIn("Feed URL", self.source_text)
+        self.assertIn("Plain Description", self.source_text)
 
 
 class MarketDataDocumentationTests(unittest.TestCase):

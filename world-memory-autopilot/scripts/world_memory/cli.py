@@ -12,7 +12,6 @@ import sys
 from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from xml.etree import ElementTree
 
 from .contracts import validate_registry
 from .feed import SOURCES, FeedSource, parse_feed
@@ -289,12 +288,7 @@ def normalize_feed_command(
     source = _source_by_id(feed_id)
     fetched_at = parse_utc(now)
     payload = _read_bytes(payload_path)
-    try:
-        received = parse_feed(source, payload, fetched_at)
-    except ElementTree.ParseError as exc:
-        raise ValueError(f"invalid XML payload: {exc}") from exc
-    except LookupError as exc:
-        raise ValueError(f"invalid XML encoding: {exc}") from exc
+    received = parse_feed(source, payload, fetched_at)
     prior: list[dict] = []
     if fingerprint_window_path is not None:
         prior = _strict_prior_window(_read_json(fingerprint_window_path))

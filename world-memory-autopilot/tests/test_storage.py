@@ -225,7 +225,7 @@ def feed_item(index: int, *, status: str = "pending", published_at: str | None =
         "sourceFingerprint": fingerprint,
         "feedId": "financial_juice",
         "feedTitle": "FinancialJuice",
-        "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml",
+        "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv",
         "sourceUrl": f"https://example.com/items/{index}",
         "title": f"Headline {index}",
         "sourcePublishedAt": published,

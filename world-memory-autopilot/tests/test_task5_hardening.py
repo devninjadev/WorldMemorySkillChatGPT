@@ -140,27 +140,27 @@ def feed_item(
     source = {
         "financial_juice": (
             "FinancialJuice",
-            "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml",
+            "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv",
             0,
         ),
         "walter_bloomberg": (
             "Walter Bloomberg",
-            "https://rss.app/feeds/YcRRdWN5eSO3o2LP.xml",
+            "https://rss.app/feeds/YcRRdWN5eSO3o2LP.csv",
             0,
         ),
         "wall_st_engine": (
             "Wall St Engine",
-            "https://rss.app/feeds/Hf52VRUllNu7gABF.xml",
+            "https://rss.app/feeds/Hf52VRUllNu7gABF.csv",
             0,
         ),
         "first_squawk": (
             "First Squawk",
-            "https://rss.app/feeds/d68ow40E3dkwaEvN.xml",
+            "https://rss.app/feeds/d68ow40E3dkwaEvN.csv",
             -540,
         ),
         "unusual_whales": (
             "unusual_whales",
-            "https://rss.app/feeds/nikLNBATmLDuprRz.xml",
+            "https://rss.app/feeds/nikLNBATmLDuprRz.csv",
             -540,
         ),
     }[feed_id]

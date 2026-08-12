@@ -1,15 +1,15 @@
-"""Normalize RSS and Atom feed entries into World Memory buffer rows."""
+"""Normalize strict RSS.app CSV rows into World Memory buffer rows."""
 
 from __future__ import annotations
 
+import csv
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import hashlib
+import io
 from itertools import chain
 from typing import Callable, Iterable
-from xml.etree import ElementTree
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class FeedSource:
 
 @dataclass(frozen=True)
 class FeedItem:
-    """The normalized fields required to turn an XML entry into a buffer row."""
+    """The normalized fields required to turn a CSV row into a buffer row."""
 
     identity: str
     source_url: str
@@ -43,11 +43,27 @@ class FetchOutcome:
 
 
 SOURCES = (
-    FeedSource("financial_juice", "FinancialJuice", "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml", 0),
-    FeedSource("walter_bloomberg", "Walter Bloomberg", "https://rss.app/feeds/YcRRdWN5eSO3o2LP.xml", 0),
-    FeedSource("wall_st_engine", "Wall St Engine", "https://rss.app/feeds/Hf52VRUllNu7gABF.xml", 0),
-    FeedSource("first_squawk", "First Squawk", "https://rss.app/feeds/d68ow40E3dkwaEvN.xml", -540),
-    FeedSource("unusual_whales", "unusual_whales", "https://rss.app/feeds/nikLNBATmLDuprRz.xml", -540),
+    FeedSource("financial_juice", "FinancialJuice", "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv", 0),
+    FeedSource("walter_bloomberg", "Walter Bloomberg", "https://rss.app/feeds/YcRRdWN5eSO3o2LP.csv", 0),
+    FeedSource("wall_st_engine", "Wall St Engine", "https://rss.app/feeds/Hf52VRUllNu7gABF.csv", 0),
+    FeedSource("first_squawk", "First Squawk", "https://rss.app/feeds/d68ow40E3dkwaEvN.csv", -540),
+    FeedSource("unusual_whales", "unusual_whales", "https://rss.app/feeds/nikLNBATmLDuprRz.csv", -540),
+)
+
+RSS_APP_CSV_HEADER = (
+    "ID",
+    "Feed URL",
+    "Feed Link",
+    "Feed Title",
+    "Feed Description",
+    "Feed Icon",
+    "Title",
+    "Link",
+    "Description",
+    "Image",
+    "Plain Description",
+    "Author",
+    "Date",
 )
 
 FINANCIAL_JUICE, WALTER_BLOOMBERG, WALL_ST_ENGINE, FIRST_SQUAWK, UNUSUAL_WHALES = SOURCES
@@ -59,24 +75,8 @@ def source_fingerprint(feed_id: str, identity: str, raw_published: str) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-def _local_name(element: ElementTree.Element) -> str:
-    return element.tag.rsplit("}", 1)[-1]
-
-
-def _text(element: ElementTree.Element | None) -> str:
-    return "" if element is None or element.text is None else element.text.strip()
-
-
 def _collapsed_text(value: str) -> str:
     return " ".join(value.split())
-
-
-def _child(element: ElementTree.Element, name: str) -> ElementTree.Element | None:
-    return next((child for child in element if _local_name(child) == name), None)
-
-
-def _child_text(element: ElementTree.Element, name: str) -> str:
-    return _text(_child(element, name))
 
 
 def _format_utc(value: datetime) -> str:
@@ -87,44 +87,32 @@ def _format_utc(value: datetime) -> str:
 
 def _parse_timestamp(raw_published: str) -> datetime:
     try:
-        parsed = parsedate_to_datetime(raw_published)
-    except (TypeError, ValueError):
-        parsed = None
-    if parsed is None:
-        try:
-            parsed = datetime.fromisoformat(raw_published.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(f"invalid published timestamp: {raw_published}") from exc
+        parsed = datetime.fromisoformat(raw_published.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"invalid published timestamp: {raw_published}") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 
 
-def _rss_item(entry: ElementTree.Element, source: FeedSource) -> FeedItem:
-    title = _collapsed_text(_child_text(entry, "title"))
-    link = _child_text(entry, "link")
-    identity = _child_text(entry, "guid") or link or title
-    raw_published = _child_text(entry, "pubDate")
-    if not identity or not raw_published:
-        raise ValueError("RSS item requires an identity and pubDate")
-    return FeedItem(identity, link or source.url, title, raw_published, _parse_timestamp(raw_published))
-
-
-def _atom_link(entry: ElementTree.Element) -> str:
-    for link in entry:
-        if _local_name(link) == "link" and link.get("href"):
-            return link.get("href", "").strip()
-    return ""
-
-
-def _atom_item(entry: ElementTree.Element, source: FeedSource) -> FeedItem:
-    title = _collapsed_text(_child_text(entry, "title"))
-    link = _atom_link(entry)
-    identity = _child_text(entry, "id") or link or title
-    raw_published = _child_text(entry, "published") or _child_text(entry, "updated")
-    if not identity or not raw_published:
-        raise ValueError("Atom entry requires an identity and published timestamp")
-    return FeedItem(identity, link or source.url, title, raw_published, _parse_timestamp(raw_published))
+def _csv_item(row: dict[str, str], source: FeedSource) -> FeedItem:
+    title = _collapsed_text(row["Title"])
+    link = row["Link"].strip()
+    identity = link or title
+    raw_published = row["Date"].strip()
+    if not title:
+        raise ValueError("RSS.app CSV row requires a non-empty Title")
+    if not identity:
+        raise ValueError("RSS.app CSV row requires Link or Title identity")
+    if not raw_published:
+        raise ValueError("RSS.app CSV row requires Date")
+    return FeedItem(
+        identity,
+        link or source.url,
+        title,
+        raw_published,
+        _parse_timestamp(raw_published),
+    )
 
 
 def _row(source: FeedSource, item: FeedItem, fetched_at: datetime) -> dict:
@@ -152,16 +140,27 @@ def _row(source: FeedSource, item: FeedItem, fetched_at: datetime) -> dict:
 
 
 def parse_feed(source: FeedSource, payload: bytes, fetched_at: datetime) -> list[dict]:
-    """Parse RSS 2.0 or Atom XML bytes into pending World Memory buffer rows."""
-    root = ElementTree.fromstring(payload)
-    root_name = _local_name(root)
-    if root_name == "rss":
-        entries = [child for node in root if _local_name(node) == "channel" for child in node if _local_name(child) == "item"]
-        return [_row(source, _rss_item(entry, source), fetched_at) for entry in entries]
-    if root_name == "feed":
-        entries = [child for child in root if _local_name(child) == "entry"]
-        return [_row(source, _atom_item(entry, source), fetched_at) for entry in entries]
-    raise ValueError("unsupported feed format")
+    """Parse exact RSS.app UTF-8 CSV bytes into pending buffer rows."""
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("RSS.app CSV payload must be valid UTF-8") from exc
+    if text.startswith("\ufeff"):
+        raise ValueError("RSS.app CSV payload must not contain a UTF-8 BOM")
+    try:
+        reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+        header = next(reader, None)
+        if header != list(RSS_APP_CSV_HEADER):
+            raise ValueError("RSS.app CSV header must match the exact configured schema")
+        items = []
+        for index, values in enumerate(reader, start=2):
+            if len(values) != len(RSS_APP_CSV_HEADER):
+                raise ValueError(f"RSS.app CSV row {index} has an invalid column count")
+            record = dict(zip(RSS_APP_CSV_HEADER, values, strict=True))
+            items.append(_row(source, _csv_item(record, source), fetched_at))
+        return items
+    except csv.Error as exc:
+        raise ValueError(f"invalid RSS.app CSV payload: {exc}") from exc
 
 
 def merge_buffer(existing: Iterable[dict], incoming: Iterable[dict]) -> list[dict]:

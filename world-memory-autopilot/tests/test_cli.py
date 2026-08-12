@@ -16,7 +16,7 @@ from tests.test_recovery import eligible_bundle
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "scripts"
-FIXTURE = ROOT / "tests" / "fixtures" / "rss-sample.xml"
+FIXTURE = ROOT / "tests" / "fixtures" / "rss-app-sample.csv"
 INSTALLATION_KEY = "wm:123e4567-e89b-42d3-a456-426614174000:default"
 IDS = {
     "installations": "11111111-1111-4111-8111-111111111111",
@@ -591,8 +591,8 @@ class CliContractTests(unittest.TestCase):
             "normalize-feed", "--feed-id", "financial_juice",
             "--payload", str(FIXTURE), "--now", "2026-08-10T02:00:00Z",
         )
-        fingerprint_early = "e47383df85601d680ea481128453392f17d73f49d195806ddb4ce18df16006e8"
-        fingerprint_late = "42975509b21fdbc8dbf02486af9a60a661d7042832dcf063ae7cb7a109a4ba71"
+        fingerprint_early = "93414ce7e43747c74757d4a47b4b3be6710618374d3b030fa748865f5e4985c3"
+        fingerprint_late = "3c9e3de889c2c18ee551db641de0115284a966264c36df8d477cb42de287339d"
         expected = {
             "cursor": fingerprint_late,
             "feedId": "financial_juice",
@@ -602,10 +602,10 @@ class CliContractTests(unittest.TestCase):
             ],
             "items": [
                 {
-                    "schemaVersion": 1, "id": "nf_e47383df85601d680e",
+                    "schemaVersion": 1, "id": "nf_93414ce7e43747c747",
                     "sourceFingerprint": fingerprint_early,
                     "feedId": "financial_juice", "feedTitle": "FinancialJuice",
-                    "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml",
+                    "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv",
                     "sourceUrl": "https://example.test/inflation-cools",
                     "title": "Inflation cools",
                     "sourcePublishedAt": "2026-08-09T11:30:00Z",
@@ -615,10 +615,10 @@ class CliContractTests(unittest.TestCase):
                     "status": "pending", "importanceCandidate": "unassessed",
                 },
                 {
-                    "schemaVersion": 1, "id": "nf_42975509b21fdbc8db",
+                    "schemaVersion": 1, "id": "nf_3c9e3de889c2c18ee5",
                     "sourceFingerprint": fingerprint_late,
                     "feedId": "financial_juice", "feedTitle": "FinancialJuice",
-                    "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml",
+                    "feedSourceUrl": "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv",
                     "sourceUrl": "https://example.test/markets-open-higher",
                     "title": "Markets open higher",
                     "sourcePublishedAt": "2026-08-09T12:00:00Z",
@@ -638,11 +638,11 @@ class CliContractTests(unittest.TestCase):
     def test_normalize_feed_dedupes_against_strict_prior_window_but_keeps_cursor(self):
         window = [
             {
-                "sourceFingerprint": "e47383df85601d680ea481128453392f17d73f49d195806ddb4ce18df16006e8",
+                "sourceFingerprint": "93414ce7e43747c74757d4a47b4b3be6710618374d3b030fa748865f5e4985c3",
                 "publishedAt": "2026-08-09T11:30:00Z",
             },
             {
-                "sourceFingerprint": "42975509b21fdbc8dbf02486af9a60a661d7042832dcf063ae7cb7a109a4ba71",
+                "sourceFingerprint": "3c9e3de889c2c18ee551db641de0115284a966264c36df8d477cb42de287339d",
                 "publishedAt": "2026-08-09T12:00:00Z",
             },
         ]
@@ -655,7 +655,7 @@ class CliContractTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout), {
-            "cursor": "42975509b21fdbc8dbf02486af9a60a661d7042832dcf063ae7cb7a109a4ba71",
+            "cursor": "3c9e3de889c2c18ee551db641de0115284a966264c36df8d477cb42de287339d",
             "feedId": "financial_juice",
             "fingerprintWindow": window,
             "items": [],
@@ -663,7 +663,7 @@ class CliContractTests(unittest.TestCase):
             "receivedCount": 2,
         })
 
-    def test_normalize_feed_rejects_noncanonical_prior_window_and_bad_xml(self):
+    def test_normalize_feed_rejects_noncanonical_prior_window_and_bad_csv(self):
         duplicate = [
             {"sourceFingerprint": "a" * 64, "publishedAt": "2026-08-09T00:00:00Z"},
             {"sourceFingerprint": "a" * 64, "publishedAt": "2026-08-09T00:00:00Z"},
@@ -671,31 +671,29 @@ class CliContractTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             prior = write_json(root, "window.json", duplicate)
-            malformed = root / "bad.xml"
-            malformed.write_text("<rss>", encoding="utf-8")
+            malformed = root / "bad.csv"
+            malformed.write_text("wrong,header\n", encoding="utf-8")
             duplicate_result = run_cli_raw(
                 "normalize-feed", "--feed-id", "financial_juice",
                 "--payload", str(FIXTURE), "--now", "2026-08-10T02:00:00Z",
                 "--fingerprint-window", str(prior),
             )
-            xml_result = run_cli_raw(
+            csv_result = run_cli_raw(
                 "normalize-feed", "--feed-id", "financial_juice",
                 "--payload", str(malformed), "--now", "2026-08-10T02:00:00Z",
             )
         self.assert_invalid(duplicate_result, "duplicate")
-        self.assert_invalid(xml_result, "XML")
+        self.assert_invalid(csv_result, "CSV")
 
-    def test_normalize_feed_unknown_xml_encoding_is_invalid_input(self):
+    def test_normalize_feed_non_utf8_csv_is_invalid_input(self):
         with TemporaryDirectory() as temp:
-            payload = Path(temp) / "unknown-encoding.xml"
-            payload.write_bytes(
-                b'<?xml version="1.0" encoding="does-not-exist"?><rss></rss>'
-            )
+            payload = Path(temp) / "non-utf8.csv"
+            payload.write_bytes(b"\xff")
             result = run_cli_raw(
                 "normalize-feed", "--feed-id", "financial_juice",
                 "--payload", str(payload), "--now", "2026-08-10T02:00:00Z",
             )
-        self.assert_invalid(result, "encoding")
+        self.assert_invalid(result, "UTF-8")
 
     def test_gate_combines_policy_with_authoritative_clock(self):
         expected_policy = {
@@ -863,17 +861,17 @@ class CliContractTests(unittest.TestCase):
             "unknown feed id",
         )
 
-    def test_json_and_xml_input_paths_remain_byte_identical(self):
+    def test_json_and_csv_input_paths_remain_byte_identical(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             value_path = write_json(root, "value.json", {"b": 2, "a": 1})
-            xml_path = root / "sample.xml"
-            xml_path.write_bytes(FIXTURE.read_bytes())
-            before = {value_path: value_path.read_bytes(), xml_path: xml_path.read_bytes()}
+            csv_path = root / "sample.csv"
+            csv_path.write_bytes(FIXTURE.read_bytes())
+            before = {value_path: value_path.read_bytes(), csv_path: csv_path.read_bytes()}
             self.assertEqual(run_cli_raw("digest", str(value_path)).returncode, 0)
             self.assertEqual(run_cli_raw(
                 "normalize-feed", "--feed-id", "financial_juice",
-                "--payload", str(xml_path), "--now", "2026-08-10T02:00:00Z",
+                "--payload", str(csv_path), "--now", "2026-08-10T02:00:00Z",
             ).returncode, 0)
             after = {path: path.read_bytes() for path in before}
         self.assertEqual(after, before)
@@ -909,6 +907,43 @@ class CliContractTests(unittest.TestCase):
             "itemCount": 0, "error": "HTTPError: unavailable",
         })
         self.assertEqual(payload["sources"][-1]["feedId"], "unusual_whales")
+
+    def test_live_outcome_uses_direct_http_request_for_csv(self):
+        observed = {}
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return FIXTURE.read_bytes()
+
+        def opener(request, *, timeout):
+            observed["url"] = request.full_url
+            observed["user_agent"] = request.get_header("User-agent")
+            observed["timeout"] = timeout
+            return Response()
+
+        result = world_memory_cli._live_outcome(
+            world_memory_cli.SOURCES[0], 7.5, opener=opener
+        )
+
+        self.assertEqual(observed, {
+            "url": "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv",
+            "user_agent": world_memory_cli.USER_AGENT,
+            "timeout": 7.5,
+        })
+        self.assertEqual(result, {
+            "feedId": "financial_juice",
+            "httpStatus": 200,
+            "itemCount": 2,
+            "error": "",
+        })
 
     @unittest.skipUnless(os.environ.get("WORLD_MEMORY_LIVE") == "1", "live network test")
     def test_all_five_feeds_are_live(self):

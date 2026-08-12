@@ -3,6 +3,7 @@
 ## Contents
 
 - Exact FEEDs
+- Direct HTTP acquisition boundary
 - Normalization and identity
 - Configured-order outcomes and cursor cache
 - Fingerprint checkpoints
@@ -10,33 +11,45 @@
 
 ## Exact FEEDs
 
-Fetch exactly these five XML sources independently, in this configured order:
+Fetch exactly these five RSS.app CSV sources independently, in this configured order:
 
 | `feedId` | Title | URL | Offset minutes |
 |---|---|---|---:|
-| `financial_juice` | FinancialJuice | `https://rss.app/feeds/5VaycMAa8SwPhOAP.xml` | 0 |
-| `walter_bloomberg` | Walter Bloomberg | `https://rss.app/feeds/YcRRdWN5eSO3o2LP.xml` | 0 |
-| `wall_st_engine` | Wall St Engine | `https://rss.app/feeds/Hf52VRUllNu7gABF.xml` | 0 |
-| `first_squawk` | First Squawk | `https://rss.app/feeds/d68ow40E3dkwaEvN.xml` | -540 |
-| `unusual_whales` | unusual_whales | `https://rss.app/feeds/nikLNBATmLDuprRz.xml` | -540 |
+| `financial_juice` | FinancialJuice | `https://rss.app/feeds/5VaycMAa8SwPhOAP.csv` | 0 |
+| `walter_bloomberg` | Walter Bloomberg | `https://rss.app/feeds/YcRRdWN5eSO3o2LP.csv` | 0 |
+| `wall_st_engine` | Wall St Engine | `https://rss.app/feeds/Hf52VRUllNu7gABF.csv` | 0 |
+| `first_squawk` | First Squawk | `https://rss.app/feeds/d68ow40E3dkwaEvN.csv` | -540 |
+| `unusual_whales` | unusual_whales | `https://rss.app/feeds/nikLNBATmLDuprRz.csv` | -540 |
 
-Do not add, substitute, reorder, or correct another source unless this contract is deliberately revised.
+Do not add, substitute, reorder, change the extension, or correct another source unless this contract is deliberately revised. XML is not a configured fallback.
+
+## Direct HTTP acquisition boundary
+
+Acquire the five RSS.app CSV URLs only through the packaged direct-HTTP path using Python `urllib.request` with the configured user agent and bounded timeout. Attempt every source independently even when another request or CSV validation fails.
+
+Generic web fetch, web search, and browser navigation must not be used as an RSS.app fallback. A blocked direct-HTTP execution path, HTTP failure, malformed response, or invalid CSV is the observed error for that configured source; do not convert it into an inferred success or attempt another format. This FEED-specific boundary does not change the separate official-web fallback rules for market-data collection.
 
 ## Normalization and identity
 
-For RSS, choose item identity as `guid`, else `link`, else whitespace-collapsed title; require `pubDate`. For Atom, choose identity as `id`, else link `href`, else whitespace-collapsed title; choose raw publication text as `published`, else `updated`.
+Decode the response as UTF-8 without a BOM and require this exact ordered header with no missing, extra, reordered, or duplicate column:
+
+```text
+ID, Feed URL, Feed Link, Feed Title, Feed Description, Feed Icon, Title, Link, Description, Image, Plain Description, Author, Date
+```
+
+For every RSS.app CSV row, require a nonempty whitespace-collapsed `Title` and raw `Date`. Choose item identity as nonempty `Link`, else whitespace-collapsed `Title`. Parse raw `Date` as the publication timestamp. Reject malformed UTF-8, a BOM, a wrong column count, empty required fields, or an invalid date.
 
 Build the fingerprint bytes exactly as UTF-8:
 
 ```text
-feedId + "\n" + identity + "\n" + rawPublishedAt
+feedId + "\n" + identity + "\n" + raw Date
 ```
 
 Set `sourceFingerprint` to the lowercase 64-character SHA-256 hex digest. Set `id` to `nf_` plus the first 18 hex characters of that digest. Deduplicate only on the complete `sourceFingerprint`; a processed row wins over a duplicate pending row.
 
-Parse the raw time into UTC and retain it as `sourcePublishedAt`. Set `publishedAt` to `sourcePublishedAt + publishedAtOffsetMinutes`; only `first_squawk` and `unusual_whales` use `-540`. Preserve the literal raw publication text for fingerprinting even though stored timestamps are canonical UTC.
+Parse the raw `Date` into UTC and retain it as `sourcePublishedAt`. Set `publishedAt` to `sourcePublishedAt + publishedAtOffsetMinutes`; only `first_squawk` and `unusual_whales` use `-540`. Preserve the literal raw `Date` text for fingerprinting even though stored timestamps are canonical UTC.
 
-Use the item link as `sourceUrl`; fall back to the configured FEED URL only when no item link exists. Record the configured URL separately as `feedSourceUrl`. A normalized item retains `schemaVersion:1`, `status:"pending"`, and `importanceCandidate:"unassessed"` until analysis changes its role.
+Use `Link` as `sourceUrl`; fall back to the configured CSV URL only when `Link` is empty. Record the configured CSV URL separately as `feedSourceUrl`. A normalized item retains `schemaVersion:1`, `status:"pending"`, and `importanceCandidate:"unassessed"` until analysis changes its role.
 
 ## Configured-order outcomes and cursor cache
 

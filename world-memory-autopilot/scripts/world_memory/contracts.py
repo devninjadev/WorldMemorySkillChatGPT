@@ -33,11 +33,11 @@ _REPORT_STORAGE_OWNED_FIELDS = frozenset({
 
 # Kept here instead of importing feed.py so validation remains a dependency leaf.
 CONFIGURED_SOURCES = (
-    ("financial_juice", "FinancialJuice", "https://rss.app/feeds/5VaycMAa8SwPhOAP.xml", 0),
-    ("walter_bloomberg", "Walter Bloomberg", "https://rss.app/feeds/YcRRdWN5eSO3o2LP.xml", 0),
-    ("wall_st_engine", "Wall St Engine", "https://rss.app/feeds/Hf52VRUllNu7gABF.xml", 0),
-    ("first_squawk", "First Squawk", "https://rss.app/feeds/d68ow40E3dkwaEvN.xml", -540),
-    ("unusual_whales", "unusual_whales", "https://rss.app/feeds/nikLNBATmLDuprRz.xml", -540),
+    ("financial_juice", "FinancialJuice", "https://rss.app/feeds/5VaycMAa8SwPhOAP.csv", 0),
+    ("walter_bloomberg", "Walter Bloomberg", "https://rss.app/feeds/YcRRdWN5eSO3o2LP.csv", 0),
+    ("wall_st_engine", "Wall St Engine", "https://rss.app/feeds/Hf52VRUllNu7gABF.csv", 0),
+    ("first_squawk", "First Squawk", "https://rss.app/feeds/d68ow40E3dkwaEvN.csv", -540),
+    ("unusual_whales", "unusual_whales", "https://rss.app/feeds/nikLNBATmLDuprRz.csv", -540),
 )
 SOURCE_BY_ID = {source[0]: source for source in CONFIGURED_SOURCES}
 STATE_STRING_FIELDS = (
