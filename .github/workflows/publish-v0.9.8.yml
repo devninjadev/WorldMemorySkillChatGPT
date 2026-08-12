@@ -1,0 +1,33 @@
+name: Publish v0.9.8
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and verify release archive
+        run: |
+          zip -r world-memory-autopilot-v0.9.8.zip world-memory-autopilot \
+            -x '*/__pycache__/*' '*.py[cod]' '*/.pytest_cache/*' '*/.world-memory-runtime/*' '*/tmp*/*'
+          sha256sum world-memory-autopilot-v0.9.8.zip > world-memory-autopilot-v0.9.8.zip.sha256
+          unzip -t world-memory-autopilot-v0.9.8.zip
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.9.8 \
+            world-memory-autopilot-v0.9.8.zip \
+            world-memory-autopilot-v0.9.8.zip.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "World Memory Autopilot v0.9.8" \
+            --notes "Fixes false post-write integrity failures caused by stale Notion SQL projections. Operational Run, Feed Batch, Memory, and Report identity checks now use exhaustively paginated live database views before create, after mutation, at precommit, after commit, and during cache reconciliation. Search, direct fetch, and SQL remain useful diagnostics but cannot prove post-mutation absence or uniqueness. The Notion schema and notion-v2 payload contract remain unchanged. Requires the Notion ChatGPT plugin, Python 3.10+, and outbound HTTPS."

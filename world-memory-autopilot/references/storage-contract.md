@@ -6,6 +6,7 @@
 - Explicit live initialization and partial recovery
 - Operational Installation validation and adapter boundary
 - Exact database schemas, relations, and views
+- Fresh live projections after mutation
 - Notion serialization and canonical page bodies
 - Source-by-source queries and committed authority
 - Policy, slots, attempts, and stale recovery
@@ -247,6 +248,23 @@ Create only these table views, with `type:"table"` and the exact filter/sort DSL
 - Memory `Recent Revisions`: `SORT BY "Effective At" DESC`
 - Reports `Latest`: `SORT BY "As Of" DESC`
 
+## Fresh live projections after mutation
+
+The four unfiltered operational views are the live projection boundary for mutable ledger rows:
+
+- Runs -> `Recent`
+- Feed Batches -> `Recent`
+- Memory -> `Recent Revisions`
+- Reports -> `Latest`
+
+Fetch each registered database and resolve exactly one view with the exact configured name. Use only the `view_url` returned by that fetch; never guess a view ID, use a similarly named view, or discover a replacement database. A missing or duplicate required view is view drift. A scheduled invocation stops with zero mutation when drift is found before Run creation; after a Run exists, it blocks commit and terminalizes that Run as `failed` when safe.
+
+Build each live projection with `query_data_sources` with `mode:"view"`, the observed exact `view_url`, `is_archived:false`, and `page_size:100`. Start without a cursor and follow each returned `next_cursor` until `has_more=false`. Reject a missing/repeated cursor while `has_more=true`, a repeated page ID across pages, or any tool response that cannot prove complete pagination. Only after collecting the entire non-archived projection may the adapter application-filter exact Slot, Run, Integration, physical child, or logical child keys locally. Fetch every retained match and apply the complete structural/body validator before using it.
+
+Use a new projection from the first page before every create decision, after every create or update whose result affects identity, at precommit, after commit, and for cache reconciliation. Discard every earlier projection after a mutation; it cannot be reused as fresh evidence. Every post-create child read-back and every precommit query uses this live-projection procedure. The same procedure supplies committed Runs and committed Feed Batch candidates for due gates, fingerprint checkpoints, integration ranges, and cumulative Reports whenever writes from the current or concurrent invocations could affect the decision.
+
+SQL mode is never a post-mutation 0/1/N or uniqueness authority. It may narrow pre-mutation discovery or diagnostics, but an empty or singleton SQL result never grants create, commit, cache, recovery, or reuse permission without the corresponding complete live projection. Search ranking and direct fetch cannot prove absence or uniqueness: search is only a discovery hint, and direct fetch only confirms the current state of an already observed page ID. Retrying, sleeping, or agreement among stale SQL queries does not strengthen their authority. If the live view query is unavailable or incomplete, stop rather than treating SQL zero as absence.
+
 ## Notion serialization and canonical page bodies
 
 Use the actual TITLE property name `Name` when creating a page. Serialize properties exactly:
@@ -299,7 +317,7 @@ A Report canonical payload uses `schemaVersion:2` and the analysis contract. Its
 
 ## Source-by-source queries and committed authority
 
-Never use a cross-data-source SQL join, Rollup, or Installation relation aggregate as an integrity decision. Query one registered data source at a time, then fetch related pages and application-join by observed page ID.
+Never use a cross-data-source SQL join, Rollup, or Installation relation aggregate as an integrity decision. Query one registered data source at a time through its complete live projection, then fetch related pages and application-join by observed page ID.
 
 Apply this authority filter before every selection:
 
@@ -352,7 +370,7 @@ A delayed scheduled invocation belongs to its actual start-hour slot. Direct inv
 
 Before a Run can participate in Slot resolution, authority, or precommit, bind its observed fields to the validated Installation and invocation. Require an observed UUID `page_id`; `Installation=[<validated Installation page_id>]`; canonical second-precision `Started At` no later than the observation time; `Scheduled Slot` equal to the trigger-specific UTC floor of `Started At`; `Slot Key=slot_key(Installation Key, Trigger, Started At)`; a non-boolean integer `Attempt`; and `Run Key=run_key(Slot Key, Attempt)`. A nonempty `Integration Key` must carry the same Installation hash12. Preserve `Name` as an observed, type-sensitive snapshot value; do not invent a `Name == Run Key` rule. Missing/defaulted fields, a future `Started At`, a URL in the Installation relation, or a key derived from another Installation is a conflict.
 
-Query the Slot Key before creation and validate each row structurally. Detect a duplicate exact Run Key before applying status precedence:
+Use a new exhaustive Runs live projection, application-filter the Slot Key before creation, and validate each retained row structurally. Detect a duplicate exact Run Key before applying status precedence:
 
 - Any exact Run Key with 2 or more rows is an integrity conflict, regardless of statuses.
 - Exactly one committed Run and only failed/superseded companions reuses the committed result; do not create another Run.
@@ -363,7 +381,7 @@ Query the Slot Key before creation and validate each row structurally. Detect a 
 
 The child 0/1/N resolution below is available only after Slot resolution authorizes the current preparing Run, either as a newly created singleton or a valid stale resume. A fresh preparing Run left by another invocation does not become resumable merely because its child query returns 0 or 1; it still blocks every new attempt and commit.
 
-After creating a preparing Run, requery its exact Run Key. Continue only on exactly one row with the expected page ID and snapshot. On zero after an uncertain create, requery before considering another create. On two or more, commit none.
+After creating a preparing Run, use the Runs live projection from a new first page and application-filter its exact Run Key. Continue only on exactly one row with the expected page ID and snapshot. On zero after an uncertain create, repeat a complete new live projection before considering another create. On two or more, commit none. Never terminalize a directly fetched, confirmed new Run merely because SQL mode returns zero for it.
 
 A singleton preparing Run becomes stale only when the current observed time is at least 65 minutes after that Run's own observed canonical `Started At`. Never infer its `Started At` from the current invocation time, Slot, `Created At`, or another timestamp; an absent or malformed value is an integrity conflict, not evidence of freshness or staleness. Fetch a provably stale singleton and its expected child set:
 
@@ -375,7 +393,7 @@ Confirmed collection, body, digest, relation, revision, or precommit failures sh
 
 ## Child physical and logical identities
 
-Query every exact physical key immediately before create and immediately after create:
+Resolve every exact physical key from a new exhaustive live projection immediately before create and immediately after create:
 
 - 0 matches before create permits one create; an uncertain response returns to the exact query.
 - 1 match permits reuse only when page ID, parent relation, exact properties, canonical body, and digests equal the preserved expected snapshot.
@@ -537,7 +555,7 @@ report: [{key,pageId,payloadDigest,renderingDigest}, ...]
 
 Each array is sorted by `key`; duplicate keys or page IDs anywhere in the three-array inventory are invalid. The inventory kind/key/page-ID/digest values must exactly equal the complete preserved child snapshots and `expected_child_ids`. The audit also records the validated registry digest, configured source outcomes, gate evidence, prior integration cutoff, autopilot permissions/decisions, notification plan, and errors in its already validated sections; do not invent new top-level business keys. This canonical inventory is used for stale inspection and precommit. Never reconstruct a smaller inventory from whatever children happen to remain visible.
 
-Immediately before commit, perform new queries separately against every relevant source:
+Immediately before commit, perform new exhaustive live projections separately against every relevant source, then application-filter:
 
 1. Runs by Slot Key
 2. Runs by exact Run Key
@@ -559,9 +577,9 @@ Any zero/multiple match, unexpected child, changed body/digest/property, mutuall
 
 ## Commit, cache reconciliation, notification, and failures
 
-Set `Status=committed` only after the full precommit gate passes. This status update is the final authoritative mutation. If its response is uncertain, query the exact Run Key and Slot and fetch the page; do not claim success or failure until the status is observed. After an observed commit, requery the exact key and Slot again. A duplicate or competing committed/preparing observation is an integrity error: stop without cache mutation or user success output.
+Set `Status=committed` only after the full precommit gate passes. This status update is the final authoritative mutation. If its response is uncertain, use a new exhaustive Runs live projection for the exact Run Key and Slot and fetch the matches; do not claim success or failure until the status is observed. After an observed commit, start another exhaustive Runs live projection from its first page and resolve the exact key and Slot again. A duplicate or competing committed/preparing observation is an integrity error: stop without cache mutation or user success output.
 
-After commit confirmation, reconcile the Installation cache best-effort from a complete relevant Run projection. Include committed and noncommitted rows required to detect duplicate Run Keys and invalid status mixtures; do not prefilter the projection to successful committed rows. The pure reconciliation boundary uses decoded `{feedId:cursor}` rather than the RICH_TEXT form. Persisted Feed Batch payloads retain the configured-order `sourceOutcomes` list. For every committed row, the adapter must convert its validated list to a per-Run mapping with exactly the five configured `feedId` keys, with each inner object containing exactly `status`, `itemCount`, `cursor`, and `error`; noncommitted rows do not require decoded outcomes. Pass the complete projection as `authoritative_runs` to `reconcile_installation_cache(current, candidate, authoritative_runs)`. A committed candidate must type-sensitively match its unique projection member. Pass the resulting complete normalized Installation through `serialize-installation-cache` before the Notion update and use its canonical cursor RICH_TEXT unchanged.
+After commit confirmation, reconcile the Installation cache best-effort from a new exhaustive Runs live projection. Include committed and noncommitted rows required to detect duplicate Run Keys and invalid status mixtures; do not prefilter the projection to successful committed rows. The pure reconciliation boundary uses decoded `{feedId:cursor}` rather than the RICH_TEXT form. Persisted Feed Batch payloads retain the configured-order `sourceOutcomes` list. For every committed row, the adapter must convert its validated list to a per-Run mapping with exactly the five configured `feedId` keys, with each inner object containing exactly `status`, `itemCount`, `cursor`, and `error`; noncommitted rows do not require decoded outcomes. Pass the complete projection as `authoritative_runs` to `reconcile_installation_cache(current, candidate, authoritative_runs)`. A committed candidate must type-sensitively match its unique projection member. Pass the resulting complete normalized Installation through `serialize-installation-cache` before the Notion update and use its canonical cursor RICH_TEXT unchanged.
 
 - Reject duplicate Run Keys, duplicate committed nonempty logical Integration Keys, malformed configured outcomes, unknown sources, invalid cursor case, boolean counts, and status/error inconsistencies.
 - Validate duplicate Run Keys and row statuses across the complete projection before candidate eligibility. Thus a committed row plus a failed row with the same Run Key is a conflict, not a cache no-op.
