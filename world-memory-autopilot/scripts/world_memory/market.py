@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 from zipfile import BadZipFile, ZipFile
+from zoneinfo import ZoneInfo
 
 from .scheduler import parse_utc, utc_iso
 
@@ -113,6 +114,17 @@ TREASURY_SPREADS = {
     "5s30s": ("30Y", "5Y"),
     "3m10y": ("10Y", "3M"),
 }
+VOLATILITY_SYMBOLS = ("VIX9D", "VIX", "VIX3M", "VIX6M")
+GOOGLE_VIX_SHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "15xqjZq8di2UqrePpYR_p72j5FCj-WTEDC4rdjZSqc_w/export?format=csv&gid=0"
+)
+CBOE_VIX_HISTORY_URLS = {
+    symbol: f"https://cdn.cboe.com/api/global/us_indices/daily_prices/{symbol}_History.csv"
+    for symbol in VOLATILITY_SYMBOLS
+}
+VOLATILITY_CLOSE_LEVEL_TOLERANCE = 0.025
+VOLATILITY_CHANGE_PCT_TOLERANCE = 0.03
 
 
 def _url(base: str, parameters: list[tuple[str, str]]) -> str:
@@ -315,6 +327,22 @@ def market_data_plan(now: str) -> dict:
             "minimumCommonSessions": BREADTH_MINIMUM_COMMON_SESSIONS,
             "freshnessWarningCalendarDays": 7,
         },
+        "volatilityTermStructure": {
+            "provider": "public Google Sheet validated by Cboe",
+            "symbols": list(VOLATILITY_SYMBOLS),
+            "sourceOrder": ["google-sheet-validated", "cboe-daily-close"],
+            "googleSheetCsvUrl": GOOGLE_VIX_SHEET_CSV_URL,
+            "cboeHistoryUrls": dict(CBOE_VIX_HISTORY_URLS),
+            "changeSessions": [1, 5],
+            "unit": "index-points",
+            "valueBasis": "Cboe volatility index level",
+            "validation": {
+                "closeLevelTolerance": VOLATILITY_CLOSE_LEVEL_TOLERANCE,
+                "changePctTolerance": VOLATILITY_CHANGE_PCT_TOLERANCE,
+                "intradayWindow": "09:30-16:00 America/New_York",
+                "requiresOfficialPreviousCloseAnchor": True,
+            },
+        },
         "derived": [
             {
                 "id": "US_NET_LIQUIDITY",
@@ -397,6 +425,83 @@ def _finite_number(value: object, *, field: str) -> float:
     if not math.isfinite(parsed):
         raise ValueError(f"{field} must be a finite number")
     return parsed
+
+
+def _parse_google_vix_sheet(payload: str) -> dict[str, dict[str, float]]:
+    if not isinstance(payload, str):
+        raise ValueError("Google VIX sheet must be CSV text")
+    rows = list(csv.reader(StringIO(payload.lstrip("\ufeff"))))
+    if not rows or len(rows[0]) < 4 or rows[0][2].strip() != "가격":
+        raise ValueError("Google VIX sheet has an unexpected header")
+    observations: dict[str, dict[str, float]] = {}
+    for row in rows[1:]:
+        if len(row) < 4:
+            continue
+        symbol = row[1].strip().upper()
+        if symbol not in VOLATILITY_SYMBOLS:
+            continue
+        if symbol in observations:
+            raise ValueError(f"Google VIX sheet has duplicate {symbol}")
+        price = _finite_number(row[2].strip(), field=f"{symbol} price")
+        change_text = row[3].strip()
+        if not change_text.endswith("%"):
+            raise ValueError(f"Google VIX sheet {symbol} change must be percent")
+        change_pct = _finite_number(
+            change_text[:-1].strip(), field=f"{symbol} change"
+        )
+        if price <= 0 or change_pct <= -100:
+            raise ValueError(f"Google VIX sheet {symbol} has an invalid value")
+        observations[symbol] = {"level": price, "changePct": change_pct}
+    missing = [symbol for symbol in VOLATILITY_SYMBOLS if symbol not in observations]
+    if missing:
+        raise ValueError(f"Google VIX sheet is missing {', '.join(missing)}")
+    return observations
+
+
+def _parse_cboe_vix_history(
+    payload: str, cutoff: datetime, symbol: str
+) -> list[tuple[date, float]]:
+    if symbol not in VOLATILITY_SYMBOLS:
+        raise ValueError(f"unsupported Cboe volatility symbol {symbol}")
+    if not isinstance(payload, str):
+        raise ValueError(f"Cboe {symbol} history must be CSV text")
+    reader = csv.DictReader(StringIO(payload.lstrip("\ufeff")))
+    if reader.fieldnames is None or not {"DATE", "CLOSE"}.issubset(reader.fieldnames):
+        raise ValueError(f"Cboe {symbol} history has an unexpected header")
+    observations: dict[date, float] = {}
+    for row in reader:
+        try:
+            observed = datetime.strptime(str(row["DATE"]).strip(), "%m/%d/%Y").date()
+            close = _finite_number(row["CLOSE"], field=f"{symbol} close")
+        except (KeyError, TypeError, ValueError):
+            continue
+        if observed <= cutoff.date() and close > 0:
+            if observed in observations and observations[observed] != close:
+                raise ValueError(f"Cboe {symbol} has conflicting closes for {observed}")
+            observations[observed] = close
+    history = sorted(observations.items())
+    if len(history) < 2:
+        raise ValueError(f"Cboe {symbol} history requires two sessions")
+    return history
+
+
+def _volatility_changes(history: list[tuple[date, float]]) -> dict[str, float]:
+    values = [value for _, value in history]
+    return {
+        f"{window}-session": (values[-1] / values[-window - 1] - 1) * 100
+        for window in (1, 5)
+        if len(values) > window
+    }
+
+
+def _is_us_regular_session(cutoff: datetime, latest_close_date: date) -> bool:
+    eastern = cutoff.astimezone(ZoneInfo("America/New_York"))
+    minutes = eastern.hour * 60 + eastern.minute
+    return (
+        eastern.weekday() < 5
+        and latest_close_date < eastern.date()
+        and 9 * 60 + 30 <= minutes < 16 * 60
+    )
 
 
 def _parse_fred_csv(series_id: str, payload: str, cutoff: datetime) -> list[tuple[date, float]]:
@@ -1154,6 +1259,21 @@ def collect_market_data(
     )
     request_specs.append(
         ("treasury:csv", fetch_text, plan["treasuryYieldCurve"]["csvUrl"])
+    )
+    request_specs.append(
+        (
+            "volatility:sheet",
+            fetch_text,
+            plan["volatilityTermStructure"]["googleSheetCsvUrl"],
+        )
+    )
+    request_specs.extend(
+        (
+            f"volatility:cboe:{symbol}",
+            fetch_text,
+            plan["volatilityTermStructure"]["cboeHistoryUrls"][symbol],
+        )
+        for symbol in plan["volatilityTermStructure"]["symbols"]
     )
     request_specs.extend(
         (f"binance:{source['symbol']}", fetch_text, source["url"])
@@ -1983,6 +2103,196 @@ def collect_market_data(
             "attempts": breadth_attempts,
         }
 
+    volatility_plan = plan["volatilityTermStructure"]
+    volatility_attempts: list[dict] = []
+    sheet_attempt = attempts["volatility:sheet"]
+    sheet_observations: dict[str, dict[str, float]] = {}
+    try:
+        if sheet_attempt["error"] is not None:
+            raise ValueError(
+                str(sheet_attempt["error"]).strip() or "Google VIX sheet request failed"
+            )
+        sheet_observations = _parse_google_vix_sheet(sheet_attempt["payload"])
+        volatility_attempts.append(
+            {
+                "sourceId": "GOOGLE_SHEET_VIX",
+                "status": "ok",
+                "sourceUrl": volatility_plan["googleSheetCsvUrl"],
+                "fetchedAt": sheet_attempt["fetchedAt"],
+            }
+        )
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        sheet_failure = {
+            "sourceId": "GOOGLE_SHEET_VIX",
+            "status": "failed",
+            "sourceUrl": volatility_plan["googleSheetCsvUrl"],
+            "fetchedAt": sheet_attempt["fetchedAt"],
+            "reason": str(exc).strip() or "Google VIX sheet failed",
+        }
+        volatility_attempts.append(sheet_failure)
+        gaps.append(sheet_failure.copy())
+
+    cboe_histories: dict[str, list[tuple[date, float]]] = {}
+    cboe_fetched_at: dict[str, str] = {}
+    for symbol in VOLATILITY_SYMBOLS:
+        attempt = attempts[f"volatility:cboe:{symbol}"]
+        source_id = f"CBOE_{symbol}"
+        source_url = volatility_plan["cboeHistoryUrls"][symbol]
+        try:
+            if attempt["error"] is not None:
+                raise ValueError(
+                    str(attempt["error"]).strip() or f"Cboe {symbol} request failed"
+                )
+            history = _parse_cboe_vix_history(attempt["payload"], cutoff, symbol)
+            cboe_histories[symbol] = history
+            cboe_fetched_at[symbol] = attempt["fetchedAt"]
+            volatility_attempts.append(
+                {
+                    "sourceId": source_id,
+                    "status": "ok",
+                    "sourceUrl": source_url,
+                    "fetchedAt": attempt["fetchedAt"],
+                    "observationDate": history[-1][0].isoformat(),
+                }
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            cboe_failure = {
+                "sourceId": source_id,
+                "status": "failed",
+                "sourceUrl": source_url,
+                "fetchedAt": attempt["fetchedAt"],
+                "reason": str(exc).strip() or f"Cboe {symbol} failed",
+            }
+            volatility_attempts.append(cboe_failure)
+            gaps.append(cboe_failure.copy())
+
+    volatility_components: dict[str, dict] = {}
+    sheet_received_at = parse_utc(sheet_attempt["fetchedAt"])
+    for symbol in VOLATILITY_SYMBOLS:
+        history = cboe_histories.get(symbol)
+        sheet_value = sheet_observations.get(symbol)
+        if history is None:
+            if sheet_value is not None:
+                validation_failure = {
+                    "sourceId": f"GOOGLE_SHEET_VIX:{symbol}",
+                    "status": "failed",
+                    "sourceUrl": volatility_plan["googleSheetCsvUrl"],
+                    "fetchedAt": sheet_attempt["fetchedAt"],
+                    "reason": "Cboe official validation history is unavailable",
+                }
+                gaps.append(validation_failure)
+            continue
+
+        latest_date, latest_close = history[-1]
+        official_changes = _volatility_changes(history)
+        official_change = official_changes["1-session"]
+        accepted_tier: str | None = None
+        if sheet_value is not None:
+            close_matches = (
+                abs(sheet_value["level"] - latest_close)
+                <= VOLATILITY_CLOSE_LEVEL_TOLERANCE
+                and abs(sheet_value["changePct"] - official_change)
+                <= VOLATILITY_CHANGE_PCT_TOLERANCE
+            )
+            denominator = 1 + (sheet_value["changePct"] / 100)
+            prior_anchor_matches = (
+                denominator > 0
+                and abs((sheet_value["level"] / denominator) - latest_close)
+                <= VOLATILITY_CLOSE_LEVEL_TOLERANCE
+            )
+            if close_matches:
+                accepted_tier = "google-sheet-validated-close"
+            elif _is_us_regular_session(sheet_received_at, latest_date) and prior_anchor_matches:
+                accepted_tier = "google-sheet-validated-intraday"
+
+        if accepted_tier is not None and sheet_value is not None:
+            component_changes = dict(official_changes)
+            component_changes["1-session"] = sheet_value["changePct"]
+            component = {
+                "sourceId": symbol,
+                "sourceTier": accepted_tier,
+                "sourceUrl": volatility_plan["googleSheetCsvUrl"],
+                "validationSourceUrl": volatility_plan["cboeHistoryUrls"][symbol],
+                "fetchedAt": sheet_attempt["fetchedAt"],
+                "level": sheet_value["level"],
+                "changePct": sheet_value["changePct"],
+                "changesPct": component_changes,
+                "unit": volatility_plan["unit"],
+                "sourceTimestampAvailable": False,
+            }
+            if accepted_tier.endswith("intraday"):
+                component["observationAt"] = sheet_attempt["fetchedAt"]
+                component["observationDate"] = sheet_received_at.astimezone(
+                    ZoneInfo("America/New_York")
+                ).date().isoformat()
+            else:
+                component["observationDate"] = latest_date.isoformat()
+            volatility_components[symbol] = component
+            continue
+
+        if sheet_value is not None:
+            validation_failure = {
+                "sourceId": f"GOOGLE_SHEET_VIX:{symbol}",
+                "status": "failed",
+                "sourceUrl": volatility_plan["googleSheetCsvUrl"],
+                "fetchedAt": sheet_attempt["fetchedAt"],
+                "reason": "sheet value failed Cboe close or regular-session anchor validation",
+            }
+            gaps.append(validation_failure)
+        volatility_components[symbol] = {
+            "sourceId": symbol,
+            "sourceTier": "cboe-daily-close",
+            "sourceUrl": volatility_plan["cboeHistoryUrls"][symbol],
+            "fetchedAt": cboe_fetched_at[symbol],
+            "observationDate": latest_date.isoformat(),
+            "level": latest_close,
+            "changePct": official_change,
+            "changesPct": official_changes,
+            "unit": volatility_plan["unit"],
+            "sourceTimestampAvailable": False,
+        }
+
+    missing_volatility = [
+        symbol for symbol in VOLATILITY_SYMBOLS if symbol not in volatility_components
+    ]
+    volatility_levels = {
+        symbol: volatility_components[symbol]["level"]
+        for symbol in VOLATILITY_SYMBOLS
+        if symbol in volatility_components
+    }
+    volatility_changes = {
+        symbol: volatility_components[symbol]["changePct"]
+        for symbol in VOLATILITY_SYMBOLS
+        if symbol in volatility_components
+    }
+    volatility_term_structure = {
+        "status": "ok" if not missing_volatility else "partial",
+        "provider": "public Google Sheet with Cboe official validation and fallback",
+        "valueBasis": volatility_plan["valueBasis"],
+        "unit": volatility_plan["unit"],
+        "levels": volatility_levels,
+        "changesPct": volatility_changes,
+        "components": volatility_components,
+        "spreads": {
+            name: volatility_levels[left] - volatility_levels[right]
+            for name, left, right in (
+                ("VIX9D-VIX", "VIX9D", "VIX"),
+                ("VIX-VIX3M", "VIX", "VIX3M"),
+                ("VIX3M-VIX6M", "VIX3M", "VIX6M"),
+            )
+            if left in volatility_levels and right in volatility_levels
+        },
+        "attempts": volatility_attempts,
+        "missingComponents": missing_volatility,
+    }
+    component_dates = {
+        component.get("observationDate")
+        for component in volatility_components.values()
+        if component.get("observationDate")
+    }
+    if len(component_dates) == 1:
+        volatility_term_structure["observationDate"] = next(iter(component_dates))
+
     missing_liquidity = [
         source_id
         for source_id in ("WALCL", "WDTGAL", "RRPONTSYD")
@@ -2078,6 +2388,7 @@ def collect_market_data(
         "treasuryYieldCurve": treasury_yield_curve,
         "creditRatio": credit_ratio,
         "equityBreadth": equity_breadth,
+        "volatilityTermStructure": volatility_term_structure,
         "netLiquidity": net_liquidity,
         "binance": binance_results,
         "dataQuality": {"gaps": gaps},

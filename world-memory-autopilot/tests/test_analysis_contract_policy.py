@@ -61,6 +61,12 @@ class MarketDataDocumentationTests(unittest.TestCase):
         self.assertIn("2s10s", self.text)
         self.assertIn("1- and 5-session", self.text)
 
+    def test_volatility_sheet_requires_cboe_validation_and_leg_fallback(self):
+        self.assertIn("public Google Sheet", self.text)
+        self.assertIn("leg by leg", self.text)
+        self.assertIn("Cboe official daily history", self.text)
+        self.assertIn("VIX3M and VIX6M are volatility indices, not futures", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

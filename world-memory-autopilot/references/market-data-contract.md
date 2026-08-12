@@ -7,6 +7,7 @@
 - U.S. Treasury yield curve
 - HYG/LQD
 - U.S. equity direction and market breadth
+- Volatility term structure
 - U.S. net liquidity
 - Binance market observations
 - Freshness and partial failure
@@ -23,7 +24,7 @@ PYTHONPATH=<skill-path>/scripts python3 -m world_memory collect-market-data --no
 
 The plan contains request paths and extraction contracts, not observed values. The collector performs the actual keyless public requests, parses each response independently, records the pass start/end and each source's `fetchedAt`/observation time, computes NFCIRISK changes, the U.S. Treasury yield curve, HYG/LQD, RSP/SPY breadth, and U.S. net liquidity, and preserves every success when another source fails. Treat the collector JSON as the acquisition boundary; do not manually downgrade a successful member to a gap or skip a configured member because another failed. A registry, policy, or schema stop that occurs before analysis still blocks these external calls. A silent non-due Run with no event requiring market-reaction evidence need not fetch or store a market snapshot.
 
-The collector starts the FRED batch, the official Treasury annual CSV, both Nasdaq HYG/LQD histories, both Nasdaq RSP/SPY histories, and all five Binance tickers in one parallel bounded pass. Within either paired-ratio member, request both symbols concurrently at each source tier and advance only when the complete pair is unusable. The timeout is the per-member network ceiling; later tiers add bounded sequential fallback time, while first-use Yahoo dependency bootstrap may add installation time. A lagged but valid FRED or Treasury observation remains usable with its actual date and a lag warning. For net liquidity, use only `netLiquidity.status:"ok"`; when a required component fails, preserve every other successful FRED member and identify only the missing component. Never replace a collector failure with an unattempted or model-invented value.
+The collector starts the FRED batch, the official Treasury annual CSV, both Nasdaq HYG/LQD histories, both Nasdaq RSP/SPY histories, the public Google Sheet volatility snapshot, all four Cboe volatility histories, and all five Binance tickers in one parallel bounded pass. Within either paired-ratio member, request both symbols concurrently at each source tier and advance only when the complete pair is unusable. The timeout is the per-member network ceiling; later tiers add bounded sequential fallback time, while first-use Yahoo dependency bootstrap may add installation time. A lagged but valid FRED or Treasury observation remains usable with its actual date and a lag warning. For net liquidity, use only `netLiquidity.status:"ok"`; when a required component fails, preserve every other successful FRED member and identify only the missing component. Never replace a collector failure with an unattempted or model-invented value.
 
 Distinguish a source failure from an execution-path denial. When a collector member failed because the local shell or sandbox denied outbound network access, that result proves only that path failed. Before creating a source gap, use an available web-research or browser fetch capability on the same exact public URL. For FRED, the official series pages listed below are the mandatory fallback and expose the latest dated observations even when raw CSV download is blocked. Preserve every visible valid observation and compute every supported window; if only the long history is unavailable, record that window as partial rather than calling the whole source missing. Declare the source failed only after both the packaged request and this exact official fallback fail. Do not use a third-party value while an official page is available.
 
@@ -94,6 +95,14 @@ Measure regular-session close-based breadth separately with one complete RSP/SPY
 
 Intersect the two session indexes without forward-filling. Require at least 21 common sessions and compute the level plus 1-, 5-, and 20-session ratio changes. A positive five-session change is `expanding`, a negative change is `contracting`, and an unchanged ratio is `flat`. Treat this as relative breadth, not an advance/decline count. Store it under `equityBreadth`; keep the cache section independent from `creditRatio` so refreshing one pair does not erase the other.
 
+## Volatility term structure
+
+Collect `VIX9D`, `VIX`, `VIX3M`, and `VIX6M` from the public Google Sheet CSV, then validate every leg by Cboe official daily history. The sheet is a fast public snapshot, not an exchange-timestamped authority: its formulas may fall back to fixed values, its export has no source observation time, and one stale leg must not invalidate or authenticate the other three.
+
+Validate the sheet leg by leg. Outside the U.S. regular session, accept a sheet leg only when its level and displayed percentage change agree with the latest two Cboe closes within the plan's rounding tolerances. During `09:30–16:00 America/New_York`, also accept a sheet leg when its implied previous close agrees with the latest Cboe close; record `fetchedAt` as the observation time proxy and `sourceTimestampAvailable:false`. If one leg fails validation, use that symbol's latest Cboe official daily close and its 1- and 5-session changes while retaining the validated sheet legs. If Cboe validation is unavailable, do not use the unvalidated sheet leg.
+
+Store the result under `volatilityTermStructure`, including each component's source tier, direct sheet and validation URLs, actual observation date or collection-time proxy, level, changes, and source-timestamp limitation. Interpret the horizon levels as an S&P 500 expected-volatility term structure. VIX3M and VIX6M are volatility indices, not futures; never label them three- or six-month VIX futures merely because the source sheet does.
+
 ## U.S. net liquidity
 
 The collector uses `WALCL` observation dates as weekly anchors. For each anchor, it selects the last `WDTGAL` and `RRPONTSYD` observation on or before that date; never use a future value. It converts RRP from USD billions to USD millions and computes:
@@ -131,12 +140,13 @@ Preserve successful observations when another source fails. Record each failed s
 - one missing net-liquidity component suppresses the entire derived level and all changes;
 - a failed Binance ticker does not suppress any other ticker;
 - a failed `RSP/SPY` pair does not erase valid `QQQUSDT` or `SPYUSDT` live observations, and live perpetuals never replace the close-based breadth ratio;
+- a failed Google Sheet volatility leg falls back only to the same symbol's valid Cboe daily history; never authenticate one symbol with another symbol's success;
 - do not substitute DXY for `DTWEXBGS`, a crypto perpetual for BTC spot, or another commodity contract without an explicit contract revision.
 
 ## Report projection
 
 Whenever a value appears in a Report, include its direct source URL, observed date/time, fetched time, unit/denomination, market type, and change window in the canonical analysis evidence. Put formulas and proxy limitations in `methodology`; keep the Korean radar note to the plain-language interpretation required by the analysis contract.
 
-Project `QQQUSDT` and `SPYUSDT` into fast direction/repricing commentary only when their observations are current. Project `equityBreadth` as regular-session breadth with its observation date and 1-, 5-, and 20-session changes. Project Treasury levels or curve spreads when their change, event reaction, or cross-asset confirmation changes the interpretation; retain the observation date and basis-point window. Do not repeat unchanged live prices or yields merely to fill an hourly narrative; emphasize a meaningful move, an event reaction, a confirmation/invalidation, or a breadth/curve divergence that changes interpretation.
+Project `QQQUSDT` and `SPYUSDT` into fast direction/repricing commentary only when their observations are current. Project `equityBreadth` as regular-session breadth with its observation date and 1-, 5-, and 20-session changes. Project the validated `volatilityTermStructure` with per-leg provenance and distinguish a dated Cboe close from a sheet intraday snapshot. Project Treasury levels or curve spreads when their change, event reaction, or cross-asset confirmation changes the interpretation; retain the observation date and basis-point window. Do not repeat unchanged live prices, volatility levels, or yields merely to fill an hourly narrative; emphasize a meaningful move, an event reaction, a confirmation/invalidation, or a breadth/curve divergence that changes interpretation.
 
 Only add a data gap after the required bounded attempt failed, returned malformed data, or exceeded the freshness rule. Distinguish `missing`, `lagged`, and `failed` from neutral evidence. Never claim that differently timed weekly, daily, and live observations are simultaneous; call them one collection-window snapshot and expose their individual timestamps.

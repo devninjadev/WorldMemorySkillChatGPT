@@ -414,6 +414,18 @@ class CliContractTests(unittest.TestCase):
         self.assertIn("indexId=340", breadth["spGlobalHistoryUrls"]["SPY"])
         self.assertEqual(breadth["changeSessions"], [1, 5, 20])
         self.assertEqual(breadth["minimumCommonSessions"], 21)
+
+        volatility = plan["volatilityTermStructure"]
+        self.assertEqual(
+            volatility["sourceOrder"],
+            ["google-sheet-validated", "cboe-daily-close"],
+        )
+        self.assertEqual(volatility["symbols"], ["VIX9D", "VIX", "VIX3M", "VIX6M"])
+        self.assertIn("docs.google.com/spreadsheets", volatility["googleSheetCsvUrl"])
+        self.assertTrue(
+            volatility["cboeHistoryUrls"]["VIX"].endswith("/VIX_History.csv")
+        )
+        self.assertEqual(volatility["changeSessions"], [1, 5])
         self.assertTrue(plan["failurePolicy"]["attemptIndependently"])
         self.assertTrue(plan["failurePolicy"]["netLiquidityRequiresAllComponents"])
 

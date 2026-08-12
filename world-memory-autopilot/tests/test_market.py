@@ -82,6 +82,31 @@ def _treasury_xml() -> str:
     return "<QR_BC_CM><LIST_G_WEEK_OF_MONTH><G_WEEK_OF_MONTH><LIST_G_NEW_DATE>" + "".join(rows) + "</LIST_G_NEW_DATE></G_WEEK_OF_MONTH></LIST_G_WEEK_OF_MONTH></QR_BC_CM>"
 
 
+def _google_vix_sheet(*, vix: float = 15.28, vix_change: float = -1.16) -> str:
+    return (
+        "상품명,,가격,변동\n"
+        "VIX 9일,VIX9D,12.52,-1.96%\n"
+        f"VIX지수,VIX,{vix},{vix_change}%\n"
+        "VIX 3개월,VIX3M,18.91,-0.37%\n"
+        "VIX 6개월,VIX6M,21.1,-0.19%\n"
+    )
+
+
+def _cboe_vix_history(symbol: str) -> str:
+    values = {
+        "VIX9D": (12.77, 12.52),
+        "VIX": (15.46, 15.28),
+        "VIX3M": (18.98, 18.91),
+        "VIX6M": (21.14, 21.10),
+    }
+    previous, latest = values[symbol]
+    return (
+        "DATE,OPEN,HIGH,LOW,CLOSE\n"
+        f"08/10/2026,{previous},{previous},{previous},{previous}\n"
+        f"08/11/2026,{latest},{latest},{latest},{latest}\n"
+    )
+
+
 def _credit_histories() -> dict[str, dict[str, float]]:
     days = ["2026-01-07", "2026-01-08", "2026-01-09", "2026-01-12", "2026-01-13", "2026-01-14"]
     return {
@@ -188,6 +213,108 @@ def _ishares_history(values: list[float]) -> bytes:
 
 
 class MarketCollectionTests(unittest.TestCase):
+    def test_google_sheet_volatility_is_validated_leg_by_leg_against_cboe(self) -> None:
+        def fetch_text(url: str, _: float) -> str:
+            if "docs.google.com/spreadsheets" in url:
+                return _google_vix_sheet(vix=15.35, vix_change=-0.71)
+            if "cdn.cboe.com" in url:
+                symbol = Path(url).stem.removesuffix("_History")
+                return _cboe_vix_history(symbol)
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-08-12T03:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 8, 12, 3, 0, 1, tzinfo=timezone.utc),
+        )
+
+        volatility = result["volatilityTermStructure"]
+        self.assertEqual(volatility["status"], "ok")
+        self.assertEqual(volatility["levels"]["VIX"], 15.28)
+        self.assertEqual(volatility["components"]["VIX"]["sourceTier"], "cboe-daily-close")
+        self.assertEqual(
+            volatility["components"]["VIX9D"]["sourceTier"],
+            "google-sheet-validated-close",
+        )
+        self.assertEqual(volatility["observationDate"], "2026-08-11")
+        self.assertAlmostEqual(volatility["changesPct"]["VIX"], -1.1642949547)
+        self.assertIn(
+            "GOOGLE_SHEET_VIX:VIX",
+            [gap["sourceId"] for gap in result["dataQuality"]["gaps"]],
+        )
+
+    def test_google_sheet_intraday_leg_requires_official_previous_close_anchor(self) -> None:
+        current_vix = 16.0
+        change = (current_vix / 15.28 - 1) * 100
+
+        def fetch_text(url: str, _: float) -> str:
+            if "docs.google.com/spreadsheets" in url:
+                return _google_vix_sheet(vix=current_vix, vix_change=change)
+            if "cdn.cboe.com" in url:
+                symbol = Path(url).stem.removesuffix("_History")
+                return _cboe_vix_history(symbol)
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-08-12T15:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc),
+        )
+
+        vix = result["volatilityTermStructure"]["components"]["VIX"]
+        self.assertEqual(vix["sourceTier"], "google-sheet-validated-intraday")
+        self.assertEqual(vix["level"], 16.0)
+        self.assertEqual(vix["observationAt"], "2026-08-12T15:00:01Z")
+        self.assertFalse(vix["sourceTimestampAvailable"])
+
+    def test_google_sheet_intraday_validation_uses_response_time_not_feed_cutoff(self) -> None:
+        current_vix = 16.0
+        change = (current_vix / 15.28 - 1) * 100
+
+        def fetch_text(url: str, _: float) -> str:
+            if "docs.google.com/spreadsheets" in url:
+                return _google_vix_sheet(vix=current_vix, vix_change=change)
+            if "cdn.cboe.com" in url:
+                symbol = Path(url).stem.removesuffix("_History")
+                return _cboe_vix_history(symbol)
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-08-12T12:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc),
+        )
+
+        vix = result["volatilityTermStructure"]["components"]["VIX"]
+        self.assertEqual(vix["sourceTier"], "google-sheet-validated-intraday")
+        self.assertEqual(vix["observationAt"], "2026-08-12T15:00:01Z")
+
+    def test_malformed_sheet_falls_back_to_complete_cboe_term_structure(self) -> None:
+        def fetch_text(url: str, _: float) -> str:
+            if "docs.google.com/spreadsheets" in url:
+                return "상품명,,가격,변동\nVIX지수,VIX,not-a-number,-1%\n"
+            if "cdn.cboe.com" in url:
+                symbol = Path(url).stem.removesuffix("_History")
+                return _cboe_vix_history(symbol)
+            raise OSError("fixture intentionally withholds other sources")
+
+        result = market.collect_market_data(
+            "2026-08-12T03:00:00Z",
+            fetch_text=fetch_text,
+            clock=lambda: datetime(2026, 8, 12, 3, 0, 1, tzinfo=timezone.utc),
+        )
+
+        volatility = result["volatilityTermStructure"]
+        self.assertEqual(volatility["status"], "ok")
+        self.assertEqual(
+            {item["sourceTier"] for item in volatility["components"].values()},
+            {"cboe-daily-close"},
+        )
+        self.assertIn(
+            "GOOGLE_SHEET_VIX",
+            [gap["sourceId"] for gap in result["dataQuality"]["gaps"]],
+        )
+
     def test_treasury_csv_parser_uses_cutoff_and_preserves_full_curve(self) -> None:
         history = market._parse_treasury_csv(
             _treasury_csv(), datetime(2026, 1, 14, 12, 0, tzinfo=timezone.utc)
@@ -987,6 +1114,11 @@ class MarketCollectionTests(unittest.TestCase):
                 "NASDAQ_RSP_SPY",
                 "SP_GLOBAL_RSP_SPY",
                 "YAHOO_RSP_SPY",
+                "GOOGLE_SHEET_VIX",
+                "CBOE_VIX9D",
+                "CBOE_VIX",
+                "CBOE_VIX3M",
+                "CBOE_VIX6M",
                 "CLUSDT",
                 "XAUUSDT",
                 "BTCUSDT",
